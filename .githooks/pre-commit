@@ -1,0 +1,13 @@
+#!/bin/sh
+# Block transcript and database files from ever entering this public repo.
+# Bypass deliberately with `git commit --no-verify` if you are certain.
+blocked=$(git diff --cached --name-only --diff-filter=A \
+  | grep -E '\.(jsonl|db|db-shm|db-wal|sqlite3?)$' || true)
+
+if [ -n "$blocked" ]; then
+  echo "pre-commit: refusing to add transcript/database files to a public repo:" >&2
+  echo "$blocked" | sed 's/^/  /' >&2
+  echo "" >&2
+  echo "Test fixtures must be synthetic or mechanically redacted." >&2
+  exit 1
+fi

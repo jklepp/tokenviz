@@ -1,0 +1,21 @@
+{
+  "name": "tokenviz",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "FinOps and process-health metrics for agentic software development.",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "tokenviz": "./src/cli.ts"
+  },
+  "scripts": {
+    "tokenviz": "node src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typescript": "^7.0.2"
+  }
+}

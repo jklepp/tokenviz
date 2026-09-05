@@ -1,0 +1,16 @@
+# Ingested data and exports never belong in this repo.
+# TokenViz reads transcripts from every project on the machine, including private ones,
+# and this repo is public. See docs/adr/ and Q26 of the design discussion.
+*.jsonl
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+/exports/
+/fixtures/real/
+
+node_modules/
+dist/
+.env
+.env.local
