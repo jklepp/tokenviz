@@ -12,7 +12,8 @@
   },
   "scripts": {
     "tokenviz": "node src/cli.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

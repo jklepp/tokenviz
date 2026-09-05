@@ -78,4 +78,113 @@ export const MIGRATIONS: string[] = [
     error        TEXT
   );
   `,
+
+  // 0002 - transcripts: requests, incremental scan state, cost-state, rate cards.
+  `
+  -- One row per DEDUPLICATED request. The primary key IS the dedup: a resumed
+  -- or forked session re-emits earlier requests, and INSERT OR IGNORE against
+  -- (project_id, message_id) collapses them exactly as a single global Set
+  -- would, without holding every id in memory.
+  CREATE TABLE request (
+    project_id      INTEGER NOT NULL REFERENCES project(id),
+    message_id      TEXT NOT NULL,
+    session         TEXT NOT NULL,
+    slot            TEXT NOT NULL,
+    origin          TEXT NOT NULL CHECK (origin IN ('console', 'subagent')),
+    model           TEXT,
+    ts              TEXT NOT NULL,
+    day             TEXT NOT NULL,
+    input           INTEGER NOT NULL,
+    cache_write     INTEGER NOT NULL,
+    cache_write_5m  INTEGER NOT NULL,
+    cache_write_1h  INTEGER NOT NULL,
+    cache_read      INTEGER NOT NULL,
+    output          INTEGER NOT NULL,
+    thinking        INTEGER NOT NULL,
+    iterations      INTEGER NOT NULL,
+    service_tier    TEXT,
+    cwd             TEXT,
+    first_seen_at   TEXT NOT NULL,
+    PRIMARY KEY (project_id, message_id)
+  ) WITHOUT ROWID;
+
+  CREATE INDEX ix_request_day     ON request (project_id, day);
+  CREATE INDEX ix_request_model   ON request (project_id, model);
+  CREATE INDEX ix_request_session ON request (project_id, session);
+  CREATE INDEX ix_request_slot    ON request (project_id, slot, ts);
+
+  -- Resume state for incremental scanning. head_hash is what makes resuming
+  -- safe: Claude Code compacts and rewrites transcripts, and a file that was
+  -- rewritten must be re-read from zero rather than resumed into the middle of.
+  CREATE TABLE transcript_file (
+    project_id       INTEGER NOT NULL REFERENCES project(id),
+    path             TEXT NOT NULL,
+    size             INTEGER NOT NULL,
+    head_hash        TEXT NOT NULL,
+    mtime_ms         INTEGER NOT NULL,
+    byte_offset      INTEGER NOT NULL,
+    lines_seen       INTEGER NOT NULL,
+    rescans          INTEGER NOT NULL DEFAULT 0,
+    last_scanned_at  TEXT NOT NULL,
+    PRIMARY KEY (project_id, path)
+  );
+
+  -- Claude Code's own billing, emitted once per session per model. Used to seed
+  -- the first rate card and thereafter to reconcile what we compute against it.
+  CREATE TABLE session_model_cost (
+    project_id   INTEGER NOT NULL REFERENCES project(id),
+    session      TEXT NOT NULL,
+    model        TEXT NOT NULL,
+    input        INTEGER NOT NULL,
+    output       INTEGER NOT NULL,
+    thinking     INTEGER NOT NULL,
+    cache_read   INTEGER NOT NULL,
+    cache_write  INTEGER NOT NULL,
+    cost_usd     REAL NOT NULL,
+    observed_at  TEXT NOT NULL,
+    PRIMARY KEY (project_id, session, model)
+  );
+
+  CREATE TABLE session_cost (
+    project_id              INTEGER NOT NULL REFERENCES project(id),
+    session                 TEXT NOT NULL,
+    total_cost_usd          REAL,
+    total_api_duration_ms   INTEGER,
+    total_tool_duration_ms  INTEGER,
+    total_duration_ms       INTEGER,
+    lines_added             INTEGER,
+    lines_removed           INTEGER,
+    unknown_model_cost      INTEGER NOT NULL DEFAULT 0,
+    observed_at             TEXT NOT NULL,
+    PRIMARY KEY (project_id, session)
+  );
+
+  -- Effective-dated rates. A request is costed by the card in force at its
+  -- timestamp, so a price change is a visible step rather than a silent
+  -- rewrite of history. See docs/adr/0002.
+  CREATE TABLE rate_card (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    model                TEXT NOT NULL,
+    valid_from           TEXT NOT NULL,
+    input_per_mtok       REAL NOT NULL,
+    output_per_mtok      REAL NOT NULL,
+    cache_write_5m_per_mtok REAL NOT NULL,
+    cache_write_1h_per_mtok REAL NOT NULL,
+    cache_read_per_mtok  REAL NOT NULL,
+    source               TEXT NOT NULL,
+    note                 TEXT,
+    created_at           TEXT NOT NULL,
+    UNIQUE (model, valid_from)
+  );
+  `,
+
+  // 0003 - head_len: the prefix length head_hash was computed over.
+  // Without it, "hash whatever fits in 4 KiB" makes every append to a file
+  // under 4 KiB look like a rewrite. Existing scan state is cleared so the
+  // next run re-establishes it consistently; that costs one full re-read and
+  // cannot double count, because dedup is on the request primary key.
+  `
+  ALTER TABLE transcript_file ADD COLUMN head_len INTEGER NOT NULL DEFAULT 0;
+  DELETE FROM transcript_file;
+  `,
 ];
