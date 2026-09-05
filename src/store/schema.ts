@@ -187,4 +187,18 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE transcript_file ADD COLUMN head_len INTEGER NOT NULL DEFAULT 0;
   DELETE FROM transcript_file;
   `,
+
+  // 0004 - model aliases: which rate card a recorded model name is priced by.
+  // Transcripts record `claude-opus-5` while billing records
+  // `claude-opus-5[1m]`, the 1M-context tier at different rates. That mapping
+  // is an assumption, so it is stored as inspectable, editable data rather
+  // than buried in a query.
+  `
+  CREATE TABLE model_alias (
+    request_model  TEXT PRIMARY KEY,
+    card_model     TEXT NOT NULL,
+    reason         TEXT,
+    created_at     TEXT NOT NULL
+  );
+  `,
 ];

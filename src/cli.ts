@@ -8,6 +8,8 @@ import { ingestActions } from './ingest/actions.ts';
 import { ingestGitHistory } from './ingest/gitHistory.ts';
 import { ingestTranscripts } from './ingest/transcripts.ts';
 import { byModel, byOrigin, bySlot, cacheHitRate, human, totals } from './report/usage.ts';
+import { solveRates } from './pricing/solve.ts';
+import { costSummary, listCards, reconcile, seedAliases, writeCards } from './pricing/cost.ts';
 import {
   DEFAULT_COMMANDER_CONFIG,
   failedSteps,
@@ -19,6 +21,7 @@ const USAGE = `tokenviz — FinOps metrics for agentic development
 
   tokenviz ingest      [--project <path>] [--adapter <name>]
   tokenviz usage       [--project <path>]
+  tokenviz rates       [--project <path>] [--write] [--from <ISO date>]
   tokenviz promotions  [--project <path>] [--steps]
   tokenviz projects
 
@@ -35,6 +38,8 @@ function main(argv: string[]): number {
       project: { type: 'string' },
       adapter: { type: 'string' },
       steps: { type: 'boolean', default: false },
+      write: { type: 'boolean', default: false },
+      from: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -119,6 +124,71 @@ function main(argv: string[]): number {
       out('  by model');
       for (const m of byModel(db, project)) {
         out(`    ${(m.model ?? '(none)').padEnd(28)} ${String(m.requests).padStart(7)} req  ${human(m.processed).padStart(9)}`);
+      }
+      out('');
+      return 0;
+    }
+
+    case 'rates': {
+      const project = registerProject(db, { rootPath: projectPath });
+      const solved = solveRates(db, project);
+
+      out('');
+      out('Rates recovered from Claude Code billing            $ per million tokens');
+      out('model                        sess   input   output   cw 5m   cw 1h    read   med err');
+      for (const s of solved) {
+        if (!s.rates) {
+          out(`  ${s.model.padEnd(26)} ${String(s.sessions).padStart(4)}   -- ${s.note ?? ''}`);
+          continue;
+        }
+        const f = (n: number) => n.toFixed(2).padStart(7);
+        const mark = s.corroborated ? ' ' : '!';
+        out(
+          `${mark} ${s.model.padEnd(26)} ${String(s.sessions).padStart(4)}` +
+            `${f(s.rates.inputPerMTok)}${f(s.rates.outputPerMTok)}${f(s.rates.cacheWrite5mPerMTok)}` +
+            `${f(s.rates.cacheWrite1hPerMTok)}${f(s.rates.cacheReadPerMTok)}  ` +
+            `${(s.medianRelError * 100).toFixed(1)}%${s.corroborated ? '' : '   ' + s.note}`,
+        );
+      }
+      out('');
+      out('The input rate is derived as 10x the fitted cache-read rate, not fitted:');
+      out('input tokens are too few to carry signal. A row is only written when the');
+      out('fitted cache-write rate independently agrees with the observed tier mix.');
+
+      if (values.write) {
+        const validFrom = values.from ?? '2026-08-01T00:00:00Z';
+        const w = writeCards(db, solved, validFrom);
+        const aliases = seedAliases(db, project);
+        out('');
+        out(`Wrote ${w.written} card(s) effective ${validFrom}.`);
+        for (const s of w.skipped) out(`  not written  ${s}`);
+        for (const a of aliases) out(`  alias        ${a.alias} -> ${a.to}`);
+      }
+
+      const cards = listCards(db);
+      if (cards.length > 0) {
+        const cost = costSummary(db, project);
+        const rec = reconcile(db, project);
+        out('');
+        out(`API-equivalent cost   $${cost.totalUSD.toFixed(2)}   (${cost.costedRequests.toLocaleString()} requests priced)`);
+        if (cost.uncostedRequests > 0) {
+          out(`Uncosted              ${cost.uncostedRequests.toLocaleString()} requests with no card:`);
+          for (const u of cost.uncostedModels) out(`    ${u.model ?? '(none)'}  ${u.requests}`);
+        }
+        out('');
+        out(
+          `Reconciliation        computed $${rec.computedUSD.toFixed(2)} vs billed $${rec.billedUSD.toFixed(2)} ` +
+            `over ${rec.sessions} sessions`,
+        );
+        out(
+          `                      median session error ${(rec.medianRelError * 100).toFixed(1)}%, ` +
+            `total ${((rec.computedUSD - rec.billedUSD) / rec.billedUSD * 100).toFixed(1)}%`,
+        );
+        out('Billing counts usage the transcripts never recorded, so these cannot match');
+        out('exactly. The shape of the difference is the signal, not its absence.');
+      } else {
+        out('');
+        out('No rate cards stored. Re-run with --write to persist the rows above.');
       }
       out('');
       return 0;
