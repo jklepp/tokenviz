@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { openDb, storePath } from './store/db.ts';
@@ -7,6 +8,9 @@ import { repoSlug } from './sources/gh.ts';
 import { ingestActions } from './ingest/actions.ts';
 import { ingestGitHistory } from './ingest/gitHistory.ts';
 import { ingestTranscripts } from './ingest/transcripts.ts';
+import { ingestPulls } from './ingest/pulls.ts';
+import { annotatePulls, reconstructTasks, summariseTasks, taskMetrics } from './adapters/commander/tasks.ts';
+import { captureLedger, ledgerPath, ledgerStats } from './adapters/commander/ledger.ts';
 import { byModel, byOrigin, bySlot, cacheHitRate, human, totals } from './report/usage.ts';
 import { solveRates } from './pricing/solve.ts';
 import { costSummary, listCards, reconcile, seedAliases, writeCards } from './pricing/cost.ts';
@@ -22,6 +26,8 @@ const USAGE = `tokenviz — FinOps metrics for agentic development
   tokenviz ingest      [--project <path>] [--adapter <name>]
   tokenviz usage       [--project <path>]
   tokenviz rates       [--project <path>] [--write] [--from <ISO date>]
+  tokenviz tasks       [--project <path>] [--worst <n>]
+  tokenviz watch       [--project <path>] [--interval <seconds>]
   tokenviz promotions  [--project <path>] [--steps]
   tokenviz projects
 
@@ -38,6 +44,8 @@ function main(argv: string[]): number {
       project: { type: 'string' },
       adapter: { type: 'string' },
       steps: { type: 'boolean', default: false },
+      worst: { type: 'string' },
+      interval: { type: 'string' },
       write: { type: 'boolean', default: false },
       from: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
@@ -69,20 +77,26 @@ function main(argv: string[]): number {
       if (project.github_repo) {
         const actions = ingestActions(db, project);
         out(`actions  ${actions.seen} runs seen, ${actions.inserted} new`);
+        const pulls = ingestPulls(db, project);
+        const ann = annotatePulls(db, project);
+        out(
+          `pulls    ${pulls.seen} PRs seen, ${pulls.inserted} new; ` +
+            `${ann.annotated} carry a slot in the branch, ${ann.unmatched} do not`,
+        );
       } else {
         out('actions  skipped (no GitHub remote)');
       }
 
       const t = ingestTranscripts(db, project);
       out(
-        `scripts  ${t.filesSeen} transcripts: ${t.filesUnchanged} unchanged, ` +
+        `sessions ${t.filesSeen} transcripts: ${t.filesUnchanged} unchanged, ` +
           `${t.filesResumed} resumed, ${t.filesRescanned} rescanned` +
           (t.filesFailed > 0 ? `, ${t.filesFailed} failed` : ''),
       );
       out(
         `         ${t.linesRead.toLocaleString()} lines read, ` +
           `${t.requestsInserted.toLocaleString()} new requests, ` +
-          `${t.costStates} cost-state records`,
+          `${t.eventsInserted.toLocaleString()} events, ${t.costStates} cost-state records`,
       );
       return 0;
     }
@@ -191,6 +205,123 @@ function main(argv: string[]): number {
         out('No rate cards stored. Re-run with --write to persist the rows above.');
       }
       out('');
+      return 0;
+    }
+
+    case 'tasks': {
+      const project = registerProject(db, { rootPath: projectPath });
+      const tasks = reconstructTasks(db, project);
+      if (tasks.length === 0) {
+        out('No tasks reconstructed. Run `tokenviz ingest` first.');
+        return 1;
+      }
+      const metrics = taskMetrics(db, project, tasks);
+      const s = summariseTasks(db, project, metrics);
+      const usd = (n: number | null) => (n === null ? 'n/a' : '$' + n.toFixed(2));
+      const pct = (n: number | null) => (n === null ? 'n/a' : (n * 100).toFixed(1) + '%');
+      const dur = (ms: number | null) =>
+        ms === null ? 'n/a' : ms >= 3600000 ? (ms / 3600000).toFixed(1) + 'h' : (ms / 60000).toFixed(0) + 'm';
+
+      out('');
+      out(`${s.tasks} tasks  ·  ${s.landed} landed / ${s.abandoned} abandoned / ${s.open} open`);
+      out('');
+      out(`  land rate               ${pct(s.landRate)}`);
+      out(`  autonomous success      ${pct(s.autonomousSuccessRate)}   (landed with no human takeover)`);
+      out(`  tasks with a takeover   ${s.withTakeover}`);
+      out('');
+      out(`  cost per landed task    ${usd(s.costPerLanded)}`);
+      out(`  cost per autonomous     ${usd(s.costPerAutonomousSuccess)}`);
+      out(`  attributed spend        ${usd(s.totalUSD)}`);
+      out(`  orchestration overhead  ${usd(s.noTaskSlotUSD)}  ${s.noTaskSlotRequests.toLocaleString()} requests in CEO and owner slots, which open no PRs`);
+      out(`  between tasks           ${usd(s.betweenTasksUSD)}  in coder slots but cut off from any task by the 6h silence timeout`);
+      out('');
+      out(`  p50 / p95 cost          ${usd(s.p50CostUSD)} / ${usd(s.p95CostUSD)}`);
+      out(`  p50 / p95 duration      ${dur(s.p50DurationMs)} / ${dur(s.p95DurationMs)}`);
+
+      out('');
+      out('  by role');
+      const roles = new Map<string, { n: number; landed: number; usd: number; takeover: number }>();
+      for (const m of metrics) {
+        const r = roles.get(m.role) ?? { n: 0, landed: 0, usd: 0, takeover: 0 };
+        r.n += 1;
+        if (m.outcome === 'landed') r.landed += 1;
+        r.usd += m.costUSD;
+        if (m.takeover) r.takeover += 1;
+        roles.set(m.role, r);
+      }
+      for (const [role, r] of [...roles].sort((a, b) => b[1].usd - a[1].usd)) {
+        out(
+          `    ${role.padEnd(12)} ${String(r.n).padStart(4)} tasks  ${String(r.landed).padStart(4)} landed  ` +
+            `${usd(r.usd).padStart(10)}  ${usd(r.usd / Math.max(r.landed, 1)).padStart(8)}/landed  ` +
+            `${r.takeover} takeovers`,
+        );
+      }
+
+      const worstN = Number(values.worst ?? 5);
+      const worst = [...metrics].sort((a, b) => b.costUSD - a.costUSD).slice(0, worstN);
+      out('');
+      out(`  most expensive tasks`);
+      for (const m of worst) {
+        out(
+          `    #${String(m.prNumber).padEnd(5)} ${m.slot.padEnd(10)} ${usd(m.costUSD).padStart(9)}  ` +
+            `${String(m.requests).padStart(5)} req  ${dur(m.durationMs).padStart(6)}  ` +
+            `${m.takeover ? 'takeover' : '        '}  ${(m.title ?? m.taskSlug).slice(0, 44)}`,
+        );
+      }
+      out('');
+      return 0;
+    }
+
+    case 'watch': {
+      const project = registerProject(db, { rootPath: projectPath });
+      const seconds = Math.max(1, Number(values.interval ?? 5));
+      const file = ledgerPath(project);
+
+      out('');
+      out(`Watching ${file}`);
+      out(`every ${seconds}s. Ctrl-C to stop.`);
+      out('');
+      if (!fs.existsSync(file)) {
+        out('The ledger does not exist yet. Watching anyway; it will be picked up when it appears.');
+      }
+      const before = ledgerStats(db, project);
+      out(`Already captured: ${before.revisions} revision(s), ${before.tasks} task(s).`);
+      out('');
+
+      let lastMtime = -1;
+      const tick = () => {
+        let mtime = -1;
+        try {
+          mtime = fs.statSync(file).mtimeMs;
+        } catch {
+          return;
+        }
+        if (mtime === lastMtime) return;
+        lastMtime = mtime;
+        const res = captureLedger(db, project);
+        if (res.status === 'captured') {
+          out(
+            `${new Date().toISOString().slice(11, 19)}  rev ${res.rev}  ` +
+              `batch ${res.batchId ?? '-'}  ${res.tasks} task(s)`,
+          );
+        }
+      };
+
+      tick();
+      const timer = setInterval(tick, seconds * 1000);
+      const stop = () => {
+        clearInterval(timer);
+        const after = ledgerStats(db, project);
+        out('');
+        out(
+          `Stopped. ${after.revisions} revision(s), ${after.tasks} task(s), ` +
+            `${after.repaired} needed repair, ${after.withPr} carry a PR number.`,
+        );
+        db.close();
+        process.exit(0);
+      };
+      process.on('SIGINT', stop);
+      process.on('SIGTERM', stop);
       return 0;
     }
 

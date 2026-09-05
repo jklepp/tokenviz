@@ -222,6 +222,80 @@ export function parseUsage(line: string): UsageRecord | null {
   };
 }
 
+export type EventKind = 'command' | 'denial' | 'interrupt' | 'steer';
+
+export type SessionEvent = {
+  uuid: string;
+  ts: string;
+  kind: EventKind;
+  detail: string | null;
+  /** Characters typed, for a steer; otherwise null. */
+  size: number | null;
+};
+
+const COMMAND_RE = /<command-name>([^<]+)<\/command-name>/;
+
+/**
+ * Things that happened in a session which are not model requests.
+ *
+ * `steer` is the load-bearing one and the least certain: it is a human typing
+ * mid-run, which is a takeover only when it is substantive. "yes" and "go on"
+ * are not takeovers, so a length threshold separates steering from assent.
+ * The threshold is a judgement call and is therefore a parameter, not a
+ * constant buried in here.
+ */
+export function parseEvent(line: string, steerMinChars = 100): SessionEvent | null {
+  if (!line.includes('"user"')) return null;
+  let entry: {
+    type?: unknown;
+    uuid?: unknown;
+    timestamp?: unknown;
+    toolDenialKind?: unknown;
+    interruptedMessageId?: unknown;
+    isMeta?: unknown;
+    sourceToolUseID?: unknown;
+    message?: { role?: unknown; content?: unknown };
+  };
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (entry.type !== 'user') return null;
+  if (typeof entry.uuid !== 'string' || typeof entry.timestamp !== 'string') return null;
+
+  const base = { uuid: entry.uuid, ts: entry.timestamp };
+
+  // Most user-role lines are not a human typing. Skill re-invocations, system
+  // reminders and hook output all arrive as `user` with string content and are
+  // marked `isMeta`; anything carrying a `sourceToolUseID` came back from a
+  // tool. Counting these as human intervention put a takeover on 95% of tasks.
+  const machineOrigin = entry.isMeta === true || typeof entry.sourceToolUseID === 'string';
+
+  if (typeof entry.toolDenialKind === 'string') {
+    return { ...base, kind: 'denial', detail: entry.toolDenialKind, size: null };
+  }
+  if (typeof entry.interruptedMessageId === 'string') {
+    return { ...base, kind: 'interrupt', detail: null, size: null };
+  }
+
+  // Only a string content is something a human typed. An array is tool
+  // results and other machinery coming back into the conversation.
+  const content = entry.message?.content;
+  if (typeof content !== 'string') return null;
+
+  const command = COMMAND_RE.exec(content);
+  if (command) return { ...base, kind: 'command', detail: command[1]!, size: null };
+
+  if (machineOrigin) return null;
+
+  const text = content.trim();
+  // A local command's own stdout is echoed back as a user line.
+  if (text.startsWith('<local-command-stdout>')) return null;
+  if (text.length < steerMinChars) return null;
+  return { ...base, kind: 'steer', detail: null, size: text.length };
+}
+
 export type CostStateModel = {
   model: string;
   input: number;

@@ -110,7 +110,7 @@ export function seedAliases(db: DatabaseSync, project: Project): { alias: string
  * A cache write with no tier recorded is charged at the 1-hour rate, the more
  * expensive of the two, so an unknown never flatters the total.
  */
-const COST_EXPR = `
+export const COST_EXPR = `
   (r.input       / 1000000.0) * c.input_per_mtok
 + (r.output      / 1000000.0) * c.output_per_mtok
 + (r.cache_read  / 1000000.0) * c.cache_read_per_mtok

@@ -7,6 +7,7 @@ import {
   headHash,
   linesFrom,
   parseCostState,
+  parseEvent,
   parseUsage,
   projectSlug,
   type TranscriptFile,
@@ -21,6 +22,7 @@ export type TranscriptIngestStats = {
   discoverySkipped: number;
   linesRead: number;
   requestsInserted: number;
+  eventsInserted: number;
   costStates: number;
 };
 
@@ -61,6 +63,7 @@ export function ingestTranscripts(db: DatabaseSync, project: Project): Transcrip
     discoverySkipped: 0,
     linesRead: 0,
     requestsInserted: 0,
+    eventsInserted: 0,
     costStates: 0,
   };
 
@@ -106,6 +109,11 @@ export function ingestTranscripts(db: DatabaseSync, project: Project): Transcrip
          cache_read = excluded.cache_read, cache_write = excluded.cache_write,
          cost_usd = excluded.cost_usd, observed_at = excluded.observed_at`,
     );
+    const insertEvent = db.prepare(
+      `INSERT OR IGNORE INTO session_event
+         (project_id, uuid, session, slot, ts, kind, detail, size)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
     const saveState = db.prepare(
       `INSERT INTO transcript_file (
          project_id, path, size, head_hash, head_len, mtime_ms, byte_offset, lines_seen, rescans, last_scanned_at
@@ -127,6 +135,7 @@ export function ingestTranscripts(db: DatabaseSync, project: Project): Transcrip
             stats,
             readState,
             insertRequest,
+            insertEvent,
             upsertSessionCost,
             upsertModelCost,
             saveState,
@@ -158,6 +167,7 @@ type Ctx = {
   stats: TranscriptIngestStats;
   readState: ReturnType<DatabaseSync['prepare']>;
   insertRequest: ReturnType<DatabaseSync['prepare']>;
+  insertEvent: ReturnType<DatabaseSync['prepare']>;
   upsertSessionCost: ReturnType<DatabaseSync['prepare']>;
   upsertModelCost: ReturnType<DatabaseSync['prepare']>;
   saveState: ReturnType<DatabaseSync['prepare']>;
@@ -216,6 +226,19 @@ function ingestOne(file: TranscriptFile, ctx: Ctx): number {
         usage.iterations, usage.serviceTier, usage.cwd, observedAt,
       );
       inserted += Number(res.changes);
+      continue;
+    }
+
+    // Only a console can carry human intervention. A subagent's opening
+    // instruction is a long user-role message written by its parent agent, and
+    // counting that as a person typing would inflate every takeover measure.
+    const event = file.origin === 'console' ? parseEvent(line) : null;
+    if (event) {
+      const res = ctx.insertEvent.run(
+        project.id, event.uuid, file.session, file.slot, event.ts,
+        event.kind, event.detail, event.size,
+      );
+      stats.eventsInserted += Number(res.changes);
       continue;
     }
 
