@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Project } from '../store/projects.ts';
-import { COST_EXPR, costSummary, listCards, reconcile, type Card } from '../pricing/cost.ts';
+import { costSummary, listCards, reconcile, type Card } from '../pricing/cost.ts';
+import { CARD_JOIN, COST_SUM } from '../pricing/models.ts';
 import { byDay, byModel, bySlot, cacheHitRate, totals, type Totals } from './usage.ts';
 import {
   reconstructTasks,
@@ -59,12 +60,6 @@ export type Dashboard = {
   } | null;
 };
 
-const COST_JOIN = `
-  LEFT JOIN model_alias a ON a.request_model = r.model
-  JOIN rate_card c
-    ON c.model = COALESCE(a.card_model, r.model)
-   AND c.valid_from = (SELECT MAX(c2.valid_from) FROM rate_card c2
-                        WHERE c2.model = c.model AND c2.valid_from <= r.ts)`;
 
 export function buildDashboard(db: DatabaseSync, project: Project): Dashboard {
   const t = totals(db, project);
@@ -75,7 +70,7 @@ export function buildDashboard(db: DatabaseSync, project: Project): Dashboard {
   if (cards.length > 0) {
     for (const r of db
       .prepare(
-        `SELECT r.day, COALESCE(SUM(${COST_EXPR}),0) usd FROM request r ${COST_JOIN}
+        `SELECT r.day, ${COST_SUM} usd FROM request r ${CARD_JOIN}
           WHERE r.project_id = ? GROUP BY r.day`,
       )
       .all(project.id) as unknown as { day: string; usd: number }[]) {
@@ -93,7 +88,7 @@ export function buildDashboard(db: DatabaseSync, project: Project): Dashboard {
   if (cards.length > 0) {
     for (const r of db
       .prepare(
-        `SELECT r.model, COALESCE(SUM(${COST_EXPR}),0) usd FROM request r ${COST_JOIN}
+        `SELECT r.model, ${COST_SUM} usd FROM request r ${CARD_JOIN}
           WHERE r.project_id = ? GROUP BY r.model`,
       )
       .all(project.id) as unknown as { model: string; usd: number }[]) {
@@ -134,7 +129,7 @@ export function buildDashboard(db: DatabaseSync, project: Project): Dashboard {
   if (cards.length > 0) {
     for (const r of db
       .prepare(
-        `SELECT r.slot, COALESCE(SUM(${COST_EXPR}),0) usd FROM request r ${COST_JOIN}
+        `SELECT r.slot, ${COST_SUM} usd FROM request r ${CARD_JOIN}
           WHERE r.project_id = ? GROUP BY r.slot`,
       )
       .all(project.id) as unknown as { slot: string; usd: number }[]) {

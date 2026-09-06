@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Project } from '../../store/projects.ts';
-import { COST_EXPR } from '../../pricing/cost.ts';
+import { CARD_JOIN, COST_SUM } from '../../pricing/models.ts';
 
 /**
  * Reconstructing Tasks for a Commander fleet.
@@ -206,16 +206,7 @@ export function taskMetrics(db: DatabaseSync, project: Project, tasks: Task[]): 
        FROM request r WHERE ${WINDOW}`,
   );
   const costQ = db.prepare(
-    `SELECT COALESCE(SUM(${COST_EXPR}),0) usd
-       FROM request r
-       LEFT JOIN model_alias a ON a.request_model = r.model
-       JOIN rate_card c
-         ON c.model = COALESCE(a.card_model, r.model)
-        AND c.valid_from = (
-          SELECT MAX(c2.valid_from) FROM rate_card c2
-           WHERE c2.model = c.model AND c2.valid_from <= r.ts
-        )
-      WHERE ${WINDOW}`,
+    `SELECT ${COST_SUM} usd FROM request r ${CARD_JOIN} WHERE ${WINDOW}`,
   );
   const eventQ = db.prepare(
     `SELECT kind, COUNT(*) n FROM session_event r
@@ -319,22 +310,13 @@ export function summariseTasks(
     .get(project.id, ...attributed) as { n: number };
   const allCosted = db
     .prepare(
-      `SELECT COALESCE(SUM(${COST_EXPR}),0) usd FROM request r
-        LEFT JOIN model_alias a ON a.request_model = r.model
-        JOIN rate_card c ON c.model = COALESCE(a.card_model, r.model)
-         AND c.valid_from = (SELECT MAX(c2.valid_from) FROM rate_card c2
-                              WHERE c2.model = c.model AND c2.valid_from <= r.ts)
-       WHERE r.project_id = ?`,
+      `SELECT ${COST_SUM} usd FROM request r ${CARD_JOIN} WHERE r.project_id = ?`,
     )
     .get(project.id) as { usd: number };
   const unUsd = db
     .prepare(
-      `SELECT COALESCE(SUM(${COST_EXPR}),0) usd FROM request r
-        LEFT JOIN model_alias a ON a.request_model = r.model
-        JOIN rate_card c ON c.model = COALESCE(a.card_model, r.model)
-         AND c.valid_from = (SELECT MAX(c2.valid_from) FROM rate_card c2
-                              WHERE c2.model = c.model AND c2.valid_from <= r.ts)
-       WHERE r.project_id = ? AND r.slot NOT IN (${placeholders})`,
+      `SELECT ${COST_SUM} usd FROM request r ${CARD_JOIN}
+        WHERE r.project_id = ? AND r.slot NOT IN (${placeholders})`,
     )
     .get(project.id, ...attributed) as { usd: number };
 

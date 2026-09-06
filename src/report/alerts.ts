@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Project } from '../store/projects.ts';
-import { COST_EXPR } from '../pricing/cost.ts';
+import { CARD_JOIN, COST_SUM, NO_CARD_PREDICATE } from '../pricing/models.ts';
 
 /**
  * Standing checks, printed wherever ingest already runs.
@@ -53,12 +53,6 @@ export const DEFAULT_ALERT_OPTIONS: AlertOptions = {
   minSessionUSD: 2,
 };
 
-const COST_JOIN = `
-  LEFT JOIN model_alias a ON a.request_model = r.model
-  JOIN rate_card c
-    ON c.model = COALESCE(a.card_model, r.model)
-   AND c.valid_from = (SELECT MAX(c2.valid_from) FROM rate_card c2
-                        WHERE c2.model = c.model AND c2.valid_from <= r.ts)`;
 
 function median(xs: number[]): number | null {
   if (xs.length === 0) return null;
@@ -89,8 +83,8 @@ export function checkAlerts(
     // and made every real session look like a 20x runaway.
     const sessions = db
       .prepare(
-        `SELECT r.session, r.slot, MAX(r.ts) last_ts, COALESCE(SUM(${COST_EXPR}),0) usd
-           FROM request r ${COST_JOIN}
+        `SELECT r.session, r.slot, MAX(r.ts) last_ts, ${COST_SUM} usd
+           FROM request r ${CARD_JOIN}
           WHERE r.project_id = ? AND r.ts >= ? AND r.origin = 'console'
           GROUP BY r.session, r.slot`,
       )
@@ -170,10 +164,7 @@ export function checkAlerts(
     .prepare(
       `SELECT r.model, COUNT(*) n FROM request r
         WHERE r.project_id = ? AND r.model IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM rate_card c
-             LEFT JOIN model_alias a ON a.request_model = r.model
-             WHERE c.model = COALESCE(a.card_model, r.model) AND c.valid_from <= r.ts)
+          AND ${NO_CARD_PREDICATE}
         GROUP BY r.model ORDER BY n DESC`,
     )
     .all(project.id) as unknown as { model: string; n: number }[];
@@ -189,7 +180,7 @@ export function checkAlerts(
   if (hasCards) {
     const computed = db
       .prepare(
-        `SELECT r.session, COALESCE(SUM(${COST_EXPR}),0) usd FROM request r ${COST_JOIN}
+        `SELECT r.session, ${COST_SUM} usd FROM request r ${CARD_JOIN}
           WHERE r.project_id = ? GROUP BY r.session`,
       )
       .all(project.id) as unknown as { session: string; usd: number }[];

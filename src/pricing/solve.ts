@@ -1,5 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Project } from '../store/projects.ts';
+import { cacheWriteMix } from './models.ts';
+
+export { cacheWriteMix } from './models.ts';
 
 /**
  * Recovering per-model rates from Claude Code's own billing.
@@ -99,28 +102,6 @@ type Row = { input: number; output: number; cache_write: number; cache_read: num
 
 const MTOK = 1_000_000;
 
-/**
- * The observed split of cache writes between the 5-minute and 1-hour tiers,
- * for one model or for the project as a whole. Per model matters: the blend a
- * model's own traffic implies is what its fitted cache-write rate should be
- * compared against, not the fleet's average.
- */
-export function cacheWriteMix(
-  db: DatabaseSync,
-  project: Project,
-  model?: string,
-): { m5: number; m1h: number; blend: number } {
-  const r = db
-    .prepare(
-      `SELECT COALESCE(SUM(cache_write_5m),0) m5, COALESCE(SUM(cache_write_1h),0) m1h
-         FROM request WHERE project_id = ?${model ? ' AND model = ?' : ''}`,
-    )
-    .get(...(model ? [project.id, model] : [project.id])) as { m5: number; m1h: number };
-  const total = r.m5 + r.m1h;
-  const m5 = total === 0 ? 0 : r.m5 / total;
-  const m1h = total === 0 ? 1 : r.m1h / total;
-  return { m5, m1h, blend: m5 * CACHE_WRITE_5M_RATIO + m1h * CACHE_WRITE_1H_RATIO };
-}
 
 export function solveRates(db: DatabaseSync, project: Project, minSessions = 5): SolvedRate[] {
 
@@ -174,7 +155,7 @@ export function solveRates(db: DatabaseSync, project: Project, minSessions = 5):
     // that price cache reads at the usual tenth of input; where they do not,
     // the model simply does not follow that structure and the write-derived
     // figure is the one consistent with the rate actually being charged.
-    const blendRatio = cacheWriteMix(db, project, model).blend;
+    const blendRatio = cacheWriteMix(db, project.id, model).blend;
     const inputFromRead = cacheRead / CACHE_READ_RATIO;
     const inputFromWrite = blendRatio > 0 ? cacheWrite / blendRatio : inputFromRead;
     const drift = Math.abs(inputFromWrite - inputFromRead) / Math.max(inputFromRead, 1e-9);

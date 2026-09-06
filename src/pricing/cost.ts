@@ -2,6 +2,9 @@ import type { DatabaseSync } from 'node:sqlite';
 import { nowIso } from '../store/db.ts';
 import type { Project } from '../store/projects.ts';
 import type { SolvedRate } from './solve.ts';
+import { CARD_JOIN, COST_EXPR, COST_SUM, NO_CARD_PREDICATE } from './models.ts';
+
+export { COST_EXPR, COST_SUM, CARD_JOIN } from './models.ts';
 
 /**
  * Turning tokens into API-equivalent dollars.
@@ -119,28 +122,11 @@ export function seedAliases(db: DatabaseSync, project: Project): { alias: string
 
 /**
  * Cost is a computed join, never a stored column: rates are effective-dated,
- * so the same request re-costs correctly when a card is corrected.
- *
- * A cache write with no tier recorded is charged at the 1-hour rate, the more
- * expensive of the two, so an unknown never flatters the total.
+ * so the same request re-costs correctly when a card is corrected. The join
+ * itself lives in models.ts, which owns model-to-card resolution.
  */
-export const COST_EXPR = `
-  (r.input       / 1000000.0) * c.input_per_mtok
-+ (r.output      / 1000000.0) * c.output_per_mtok
-+ (r.cache_read  / 1000000.0) * c.cache_read_per_mtok
-+ (r.cache_write_5m / 1000000.0) * c.cache_write_5m_per_mtok
-+ (MAX(r.cache_write - r.cache_write_5m, 0) / 1000000.0) * c.cache_write_1h_per_mtok`;
 
-const COSTED_FROM = `
-  FROM request r
-  LEFT JOIN model_alias a ON a.request_model = r.model
-  JOIN rate_card c
-    ON c.model = COALESCE(a.card_model, r.model)
-   AND c.valid_from = (
-     SELECT MAX(c2.valid_from) FROM rate_card c2
-      WHERE c2.model = c.model AND c2.valid_from <= r.ts
-   )
- WHERE r.project_id = ?`;
+const COSTED_FROM = `FROM request r ${CARD_JOIN} WHERE r.project_id = ?`;
 
 export type CostSummary = {
   costedRequests: number;
@@ -154,18 +140,14 @@ export function costSummary(db: DatabaseSync, project: Project, until?: string):
   const args = until ? [project.id, until] : [project.id];
 
   const costed = db
-    .prepare(`SELECT COUNT(*) n, COALESCE(SUM(${COST_EXPR}), 0) total ${COSTED_FROM}${dayClause}`)
+    .prepare(`SELECT COUNT(*) n, ${COST_SUM} total ${COSTED_FROM}${dayClause}`)
     .get(...args) as { n: number; total: number };
 
   const uncosted = db
     .prepare(
       `SELECT r.model, COUNT(*) n FROM request r
         WHERE r.project_id = ?${until ? ' AND r.day <= ?' : ''}
-          AND NOT EXISTS (
-            SELECT 1 FROM rate_card c
-             LEFT JOIN model_alias a ON a.request_model = r.model
-             WHERE c.model = COALESCE(a.card_model, r.model) AND c.valid_from <= r.ts
-          )
+          AND ${NO_CARD_PREDICATE}
         GROUP BY r.model ORDER BY n DESC`,
     )
     .all(...args) as unknown as { model: string | null; n: number }[];
@@ -181,7 +163,7 @@ export function costSummary(db: DatabaseSync, project: Project, until?: string):
 export function costByModel(db: DatabaseSync, project: Project) {
   return db
     .prepare(
-      `SELECT r.model, COUNT(*) requests, COALESCE(SUM(${COST_EXPR}), 0) usd ${COSTED_FROM}
+      `SELECT r.model, COUNT(*) requests, ${COST_SUM} usd ${COSTED_FROM}
         GROUP BY r.model ORDER BY usd DESC`,
     )
     .all(project.id) as unknown as { model: string; requests: number; usd: number }[];
@@ -190,7 +172,7 @@ export function costByModel(db: DatabaseSync, project: Project) {
 export function costBySlot(db: DatabaseSync, project: Project) {
   return db
     .prepare(
-      `SELECT r.slot, COUNT(*) requests, COALESCE(SUM(${COST_EXPR}), 0) usd ${COSTED_FROM}
+      `SELECT r.slot, COUNT(*) requests, ${COST_SUM} usd ${COSTED_FROM}
         GROUP BY r.slot ORDER BY usd DESC`,
     )
     .all(project.id) as unknown as { slot: string; requests: number; usd: number }[];
@@ -215,7 +197,7 @@ export type Reconciliation = {
 export function reconcile(db: DatabaseSync, project: Project, worstN = 5): Reconciliation {
   const rows = db
     .prepare(
-      `SELECT r.session, COALESCE(SUM(${COST_EXPR}), 0) computed
+      `SELECT r.session, ${COST_SUM} computed
          ${COSTED_FROM}
         GROUP BY r.session`,
     )

@@ -69,10 +69,10 @@ h2{font-size:17px;margin:0}
 .grid{display:grid;grid-template-columns:1.6fr .9fr;gap:20px;align-items:start}
 .equal{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
 .title{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:12px}
-.chart{height:230px;display:flex;align-items:end;gap:6px;border-bottom:1px solid var(--l)}
+.chart{height:360px;display:flex;align-items:end;gap:7px;border-bottom:1px solid var(--l)}
 .day{height:100%;flex:1;display:flex;flex-direction:column;justify-content:end;min-width:0}
 .value{font-size:11px;color:var(--m);text-align:center;margin-bottom:4px;white-space:nowrap;font-variant-numeric:tabular-nums}
-.bar{background:var(--b);border-radius:4px 4px 0 0;border-top:2px solid var(--o);min-height:2px}
+.bar{background:var(--b);border-radius:5px 5px 0 0;border-top:3px solid var(--o);min-height:3px}
 .day small{font-size:11px;color:var(--m);text-align:center;margin-top:7px;display:block}
 .rows{display:grid;gap:13px}
 .rowtop{display:flex;justify-content:space-between;font-size:14px}
