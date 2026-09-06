@@ -33,6 +33,20 @@ export type ModelRow = {
   peakContext: number;
 };
 
+/** A role's whole footprint: what it consumed, what that cost, on what. */
+export type FleetRow = {
+  role: string;
+  requests: number;
+  processed: number;
+  usd: number;
+  tokenShare: number;
+  costShare: number;
+  /** Cost share divided by token share. Above 1 is dearer than its size. */
+  premium: number;
+  usdPerMTok: number;
+  models: { model: string; share: number }[];
+};
+
 export type SlotRow = {
   slot: string;
   /** Null unless the project has an adapter that gives slots a meaning. */
@@ -52,6 +66,7 @@ export type Dashboard = {
   days: DayPoint[];
   models: ModelRow[];
   slots: SlotRow[];
+  fleet: FleetRow[];
   reconciliation: { computed: number; billed: number; medianRelError: number } | null;
   commander: {
     summary: TaskSummary;
@@ -148,6 +163,57 @@ export function buildDashboard(db: DatabaseSync, project: Project): Dashboard {
     usd: slotUsd.get(s.slot) ?? 0,
   }));
 
+  // Roll slots up to roles, and pair consumption with cost. The two shares
+  // diverge whenever routing sends one role to a dearer model than another,
+  // which is the thing this is here to make visible.
+  const fleet: FleetRow[] = [];
+  if (hasRoles) {
+    const modelRows = db
+      .prepare(
+        `SELECT slot, model, SUM(input + cache_write + cache_read + output) p
+           FROM request WHERE project_id = ? AND model IS NOT NULL GROUP BY slot, model`,
+      )
+      .all(project.id) as unknown as { slot: string; model: string; p: number }[];
+
+    const agg = new Map<string, { requests: number; processed: number; usd: number; models: Map<string, number> }>();
+    for (const s of slots) {
+      const key = s.role ?? 'Owner';
+      const a = agg.get(key) ?? { requests: 0, processed: 0, usd: 0, models: new Map() };
+      a.requests += s.requests;
+      a.processed += s.processed;
+      a.usd += s.usd;
+      agg.set(key, a);
+    }
+    for (const m of modelRows) {
+      const a = agg.get(roleOf(m.slot));
+      if (a) a.models.set(m.model, (a.models.get(m.model) ?? 0) + m.p);
+    }
+
+    const totalTokens = [...agg.values()].reduce((n, a) => n + a.processed, 0);
+    const totalUsd = [...agg.values()].reduce((n, a) => n + a.usd, 0);
+
+    for (const [role, a] of agg) {
+      const tokenShare = totalTokens === 0 ? 0 : a.processed / totalTokens;
+      const costShare = totalUsd === 0 ? 0 : a.usd / totalUsd;
+      const modelTotal = [...a.models.values()].reduce((n, v) => n + v, 0) || 1;
+      fleet.push({
+        role,
+        requests: a.requests,
+        processed: a.processed,
+        usd: a.usd,
+        tokenShare,
+        costShare,
+        premium: tokenShare === 0 ? 0 : costShare / tokenShare,
+        usdPerMTok: a.processed === 0 ? 0 : a.usd / (a.processed / 1_000_000),
+        models: [...a.models.entries()]
+          .map(([model, p]) => ({ model, share: p / modelTotal }))
+          .sort((x, y) => y.share - x.share)
+          .slice(0, 4),
+      });
+    }
+    fleet.sort((x, y) => y.processed - x.processed);
+  }
+
   let commander: Dashboard['commander'] = null;
   if (project.adapter === 'commander' && cards.length > 0) {
     const tasks = reconstructTasks(db, project);
@@ -183,6 +249,7 @@ export function buildDashboard(db: DatabaseSync, project: Project): Dashboard {
     days,
     models,
     slots,
+    fleet,
     // A project whose transcripts carry no cost-state has nothing to reconcile
     // against; reporting NaN would read as a broken number rather than a gap.
     reconciliation:

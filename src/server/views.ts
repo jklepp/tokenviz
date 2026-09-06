@@ -1,4 +1,4 @@
-import type { Dashboard, SettingsView } from '../report/dashboard.ts';
+import type { Dashboard, FleetRow, SettingsView } from '../report/dashboard.ts';
 
 /**
  * The dashboard's markup.
@@ -97,6 +97,27 @@ button.ghost{background:transparent;color:var(--i);border:1px solid var(--l)}
 .flash{padding:12px 16px;border-radius:10px;border:1px solid var(--g);color:var(--g);background:var(--p);font-size:15px}
 .flash.warn{border-color:var(--o);color:var(--o)}
 .hint{font-size:13px;color:var(--m);margin-top:6px}
+.tag.ok{color:var(--g);border-color:var(--g)}
+.fleet{padding:14px 0;border-top:1px solid var(--l)}
+.fleet:first-of-type{border-top:0;padding-top:4px}
+.fleet-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:9px}
+.fleet-role{font-size:16px;font-weight:600}
+.fleet-rate{margin-left:auto}
+.pair{display:grid;grid-template-columns:52px 1fr 52px;align-items:center;gap:9px;margin-bottom:5px}
+.plabel{font-size:12px;color:var(--m)}
+.pval{font-size:13px;text-align:right;font-variant-numeric:tabular-nums}
+.ptrack{height:14px;background:var(--l);border-radius:4px;overflow:hidden}
+.pfill{display:block;height:100%;border-radius:inherit}
+.pfill.tok{background:var(--b)}
+.pfill.cost{background:var(--m)}
+.pfill.cost.warn{background:var(--o)}
+.pfill.cost.good{background:var(--g)}
+.mixbar{display:flex;height:6px;border-radius:3px;overflow:hidden;margin:9px 0 5px;background:var(--l)}
+.mixbar .seg{display:block;height:100%}
+.mixbar .seg:nth-child(1){background:var(--u)}
+.mixbar .seg:nth-child(2){background:var(--b)}
+.mixbar .seg:nth-child(3){background:var(--g)}
+.mixbar .seg:nth-child(4){background:var(--m)}
 @media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.grid,.equal{grid-template-columns:1fr}.chart{height:300px}}
 `;
 
@@ -264,6 +285,64 @@ function commanderTables(d: Dashboard): string {
 <tbody>${roleRows}</tbody></table></div></div>`;
 }
 
+
+/**
+ * Token share against cost share, per role.
+ *
+ * A single share of consumption says nothing about whether a role is worth what
+ * it costs. Drawing both bars on one scale makes the gap between them the
+ * message: a role whose cost bar overhangs its token bar is being routed to a
+ * dearer model than the rest of the fleet, and by how much is readable at a
+ * glance rather than by dividing two percentages in your head.
+ */
+function fleetPanel(d: Dashboard): string {
+  if (d.fleet.length === 0) return '';
+  const scale = Math.max(...d.fleet.flatMap((f) => [f.tokenShare, f.costShare]), 0.01);
+
+  const row = (f: FleetRow) => {
+    const w = (v: number) => `${((v / scale) * 100).toFixed(2)}%`;
+    const tone = f.premium >= 1.15 ? 'warn' : f.premium <= 0.85 ? 'good' : '';
+    const badge =
+      f.premium >= 1.15
+        ? `<span class="tag warn">&times;${f.premium.toFixed(2)} dearer</span>`
+        : f.premium <= 0.85
+          ? `<span class="tag ok">&times;${f.premium.toFixed(2)} cheaper</span>`
+          : `<span class="tag">&times;${f.premium.toFixed(2)}</span>`;
+
+    return `<div class="fleet">
+  <div class="fleet-head">
+    <span class="fleet-role">${esc(f.role)}</span>
+    ${badge}
+    <span class="meta fleet-rate">$${f.usdPerMTok.toFixed(3)} per Mtok &middot; ${f.requests.toLocaleString()} requests</span>
+  </div>
+  <div class="pair">
+    <span class="plabel">tokens</span>
+    <span class="ptrack"><span class="pfill tok" style="width:${w(f.tokenShare)}"></span></span>
+    <span class="pval">${(f.tokenShare * 100).toFixed(1)}%</span>
+  </div>
+  <div class="pair">
+    <span class="plabel">cost</span>
+    <span class="ptrack"><span class="pfill cost ${tone}" style="width:${w(f.costShare)}"></span></span>
+    <span class="pval">${(f.costShare * 100).toFixed(1)}%</span>
+  </div>
+  <div class="mixbar">${f.models
+    .map(
+      (m) =>
+        `<span class="seg m-${esc(m.model.replace(/[^a-z0-9]/gi, ''))}" style="width:${(m.share * 100).toFixed(2)}%"
+           title="${esc(m.model)} ${(m.share * 100).toFixed(0)}%"></span>`,
+    )
+    .join('')}</div>
+  <div class="note">${f.models.map((m) => `${esc(m.model.replace('claude-', ''))} ${(m.share * 100).toFixed(0)}%`).join(' &middot; ')}</div>
+</div>`;
+  };
+
+  return `<div class="panel"><div class="title"><h2>Fleet economics</h2>
+<span class="meta">Token share against cost share, on one scale</span></div>
+${d.fleet.map(row).join('')}
+<div class="note" style="margin-top:4px">Where the cost bar overhangs the token bar, that role is running a dearer model
+than the fleet average. The strip beneath each pair is its model mix.</div></div>`;
+}
+
 export function dashboardPage(d: Dashboard): string {
   const t = d.totals;
   const cards = d.cardsPresent;
@@ -278,6 +357,7 @@ ${kpi('Mean context', human(t.meanContext), `peak ${human(t.peakContext)}`)}
 ${kpis}
 ${chart(d)}
 ${d.commander ? `<div class="equal">${spendPanel(d)}${prPanel(d)}</div>` : ''}
+${fleetPanel(d)}
 <div class="grid">${slotPanel(d)}${cachePanel(d)}</div>
 ${modelPanel(d)}
 ${d.commander ? commanderTables(d) : `<div class="panel"><div class="title"><h2>Tasks</h2></div><div class="meta">
