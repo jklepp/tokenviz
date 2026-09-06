@@ -102,6 +102,11 @@ function main(argv: string[]): number {
           `${t.requestsInserted.toLocaleString()} new requests, ` +
           `${t.eventsInserted.toLocaleString()} events, ${t.costStates} cost-state records`,
       );
+      out(
+        `messages ${t.sendsInserted.toLocaleString()} sent, ` +
+          `${t.receivesInserted.toLocaleString()} received, ` +
+          `${t.dispatchesInserted.toLocaleString()} subagent dispatches`,
+      );
       for (const line of formatAlerts(checkAlerts(db, project))) out(line);
       return 0;
     }

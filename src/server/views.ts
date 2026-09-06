@@ -1,4 +1,5 @@
 import type { Dashboard, FleetRow, SettingsView } from '../report/dashboard.ts';
+import { cellKey, RUNG_NOTE, type Message, type MessagesView, type Rung, type Target } from '../report/messages.ts';
 
 /**
  * The dashboard's markup.
@@ -60,6 +61,7 @@ h2{font-size:17px;margin:0}
 .body{padding:24px 26px;display:grid;gap:22px}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 .card,.panel{background:var(--p);border:1px solid var(--l);border-radius:12px}
+.panel{min-width:0}
 .card{padding:16px;min-width:0;overflow-wrap:anywhere}
 .panel{padding:16px}
 .label{font-size:14px;color:var(--m)}
@@ -119,7 +121,39 @@ button.ghost{background:transparent;color:var(--i);border:1px solid var(--l)}
 .mixbar .seg:nth-child(3){background:var(--g)}
 .mixbar .seg:nth-child(4){background:var(--m)}
 @media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.grid,.equal{grid-template-columns:1fr}.chart{height:300px}}
+.mx{border-collapse:separate;border-spacing:4px;font-size:13px;width:auto;min-width:100%}
+.mx th{padding:0 4px 8px;font-size:12px;color:var(--m);font-weight:500;text-align:center;white-space:nowrap}
+.mx th.l{text-align:left;padding-left:2px}
+.mx td{padding:0;border-top:0}
+.mx td.rl{padding:0 14px 0 2px;white-space:nowrap;text-align:left;border-top:0}
+.mx .cell{display:block;padding:10px 8px;border-radius:7px;text-decoration:none;text-align:center;
+  font-variant-numeric:tabular-nums;border:1px solid transparent;min-width:48px}
+.mx .cell:hover{border-color:var(--m)}
+.mx .cell.on{border-color:var(--o);box-shadow:0 0 0 1px var(--o)}
+.mx .none,.mx .self{display:block;padding:10px 8px;text-align:center;color:var(--m)}
+.mx .none{opacity:.3}
+.mx .self{opacity:.22}
+.mx .gap{width:16px;padding:0}
+.mx .ghead{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--m);padding-bottom:7px;text-align:left}
+.rowname{font-weight:600}
+.msg{border-top:1px solid var(--l);padding:12px 0}
+.msg summary{cursor:pointer;list-style:none}
+.msg summary::-webkit-details-marker{display:none}
+.msg summary>.row{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.msg summary>.row::before{content:'▸';color:var(--m);font-size:11px}
+.msg[open] summary>.row::before{content:'▾'}
+.msg .when{color:var(--m);font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.msg .sum{flex:1;min-width:220px}
+.msg pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--s);border:1px solid var(--l);
+  border-radius:8px;padding:12px 14px;margin:10px 0 0 18px;font:13px/1.65 ui-monospace,Menlo,monospace}
+.msg .who{font-size:12px;color:var(--m);margin:9px 0 0 18px}
+.prgroup{margin-top:20px}
+.prgroup:first-of-type{margin-top:2px}
+.prhead{display:flex;gap:10px;align-items:baseline;padding-bottom:5px;border-bottom:1px solid var(--l)}
+.prhead b{font-size:15px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--m);margin-top:12px}
 `;
+
 
 function shell(title: string, nav: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -127,11 +161,12 @@ function shell(title: string, nav: string, body: string): string {
 <title>${esc(title)}</title><style>${CSS}</style></head><body><div class="wrap">${nav}${body}</div></body></html>`;
 }
 
-function header(project: string, page: 'dashboard' | 'settings', subtitle: string): string {
+function header(project: string, page: 'dashboard' | 'messages' | 'settings', subtitle: string): string {
   const on = (p: string) => (p === page ? ' class="on"' : '');
   return `<div class="fh"><div class="brand"><div class="logo">TV</div><div>
 <h1>${esc(project)}</h1><div class="sub">${esc(subtitle)}</div></div></div>
 <div class="nav"><a href="/p/${encodeURIComponent(project)}"${on('dashboard')}>Dashboard</a>
+<a href="/p/${encodeURIComponent(project)}/messages"${on('messages')}>Messages</a>
 <a href="/p/${encodeURIComponent(project)}/settings"${on('settings')}>Settings</a></div></div>`;
 }
 
@@ -459,4 +494,176 @@ ${rows
   .join('')}
 </tbody></table></div></div></div>`;
   return shell('TokenViz', header('TokenViz', 'dashboard', 'Projects'), body);
+}
+
+/**
+ * The message grid.
+ *
+ * Rows send, columns receive, and the two column groups are the two channels:
+ * Slots the fleet talks to, then kinds of subagent it spawns. Reading a row
+ * gives what one agent says; reading a column gives what it is told. The
+ * asymmetry between the two is the point -- a Slot with a full row and an
+ * empty column is issuing orders, and the reverse is taking them.
+ */
+function matrix(v: MessagesView): string {
+  const slug = encodeURIComponent(v.project.slug);
+  const max = Math.max(1, ...[...v.cells.values()].map((c) => c.count));
+
+  const cell = (from: string, t: Target): string => {
+    const c = v.cells.get(cellKey(from, t.key));
+    if (!c) {
+      return t.key === from
+        ? '<td><span class="self" title="an agent does not message itself">&mdash;</span></td>'
+        : '<td><span class="none">&middot;</span></td>';
+    }
+    // Capped well below full strength so the number stays legible against the
+    // fill in both themes; a heat grid nobody can read is just decoration.
+    const wash = 8 + 42 * (c.count / max);
+    const on = v.selected?.from === from && v.selected.target.key === t.key ? ' on' : '';
+    const breakdown = (Object.entries(c.rungs) as [Rung, number][])
+      .filter(([, n]) => n > 0)
+      .map(([r, n]) => `${n} ${r}`)
+      .join(', ');
+    return `<td><a class="cell${on}" href="/p/${slug}/messages?from=${encodeURIComponent(from)}&amp;to=${encodeURIComponent(t.key)}"
+ style="background:color-mix(in srgb, var(--b) ${wash.toFixed(0)}%, var(--p))"
+ title="${esc(from)} to ${esc(t.label)}: ${c.count} (${esc(breakdown)})">${c.count}</a></td>`;
+  };
+
+  const head = (targets: Target[]) => targets.map((t) => `<th>${esc(t.label)}</th>`).join('');
+  const gapHead = v.agentTargets.length > 0 ? '<th class="gap"></th>' : '';
+  const gapCell = v.agentTargets.length > 0 ? '<td class="gap"></td>' : '';
+
+  const rows = v.senders
+    .map(
+      (s) => `<tr><td class="rl"><span class="rowname">${esc(s.slot)}</span>
+<span class="meta"> ${esc(s.role)} &middot; ${s.sent}</span></td>
+${v.peerTargets.map((t) => cell(s.slot, t)).join('')}${gapCell}${v.agentTargets.map((t) => cell(s.slot, t)).join('')}</tr>`,
+    )
+    .join('');
+
+  const groupRow =
+    v.agentTargets.length > 0
+      ? `<tr><td></td><td class="ghead" colspan="${v.peerTargets.length}">to agents</td><td></td>
+<td class="ghead" colspan="${v.agentTargets.length}">to subagents</td></tr>`
+      : '';
+
+  return `<div class="panel"><div class="title"><h2>Who talks to whom</h2>
+<span class="meta">Rows send, columns receive &middot; click a cell to read it</span></div>
+<div class="scroll"><table class="mx">
+<thead>${groupRow}<tr><th class="l">from</th>${head(v.peerTargets)}${gapHead}${head(v.agentTargets)}</tr></thead>
+<tbody>${rows}</tbody></table></div>
+<div class="legend">
+<span><span class="tag">confirmed</span> both halves observed</span>
+<span><span class="tag">attributed</span> recipient&rsquo;s copy compacted away</span>
+<span><span class="tag">subagent</span> addressed to a running subagent</span>
+${v.unresolved > 0 ? '<span><span class="tag warn">unresolved</span> recipient unknown</span>' : ''}
+</div></div>`;
+}
+
+const stamp = (ts: string): string => `${ts.slice(5, 10)} ${ts.slice(11, 16)}`;
+
+/** The first line of a body, for a message whose sender wrote no summary. */
+function gist(m: Message): string {
+  if (m.summary) return m.summary;
+  const first = m.body.split('\n').find((l) => l.trim() !== '') ?? '';
+  return first.length > 120 ? `${first.slice(0, 120)}…` : first;
+}
+
+function messageRow(m: Message): string {
+  const tags = [`<span class="tag">${esc(m.rung)}</span>`];
+  if (m.channel === 'dispatch') tags.unshift('<span class="tag">dispatch</span>');
+  if (m.delivered === false) tags.push('<span class="tag warn">not delivered</span>');
+  if (m.skill) tags.push(`<span class="tag">/${esc(m.skill)}</span>`);
+  // A Task reached by the message naming a PR is weaker evidence than one
+  // reached by a time window, and says so rather than sitting silently beside it.
+  if (m.taskSource === 'mentioned') tags.push('<span class="tag">names the PR</span>');
+
+  const addressed =
+    m.fromName || m.toName !== m.target.label
+      ? `<div class="who">${esc(m.fromName ?? m.fromSlot)} &rarr; ${esc(m.toName)} &middot; ${esc(RUNG_NOTE[m.rung])}</div>`
+      : `<div class="who">${esc(RUNG_NOTE[m.rung])}</div>`;
+
+  return `<details class="msg"><summary><span class="row"><span class="when">${esc(stamp(m.ts))}</span>
+<span class="sum">${esc(gist(m))}</span>${tags.join('')}</span></summary>
+${addressed}
+${m.error ? `<div class="who"><span class="bad">${esc(m.error)}</span></div>` : ''}
+<pre>${esc(m.body)}</pre></details>`;
+}
+
+/**
+ * The selected edge, grouped under the Task each message belongs to.
+ *
+ * A message is placed by time window, the same way a request is: whichever end
+ * of it owned a Task at that instant. Messages sent while neither end held one
+ * -- fleet chatter between Tasks -- are kept, at the bottom, rather than
+ * dropped for not fitting the spine.
+ */
+function selection(v: MessagesView): string {
+  const sel = v.selected;
+  if (!sel) {
+    return `<div class="panel"><div class="title"><h2>Messages</h2></div>
+<div class="meta">Pick a cell above to read the traffic on that edge. Every message is shown in full,
+grouped under the pull request that was open at the time.</div></div>`;
+  }
+
+  const groups = new Map<string, { pr: number | null; slug: string | null; items: Message[] }>();
+  for (const m of v.messages) {
+    const key = m.prNumber === null ? '' : String(m.prNumber);
+    const g = groups.get(key) ?? { pr: m.prNumber, slug: m.taskSlug, items: [] };
+    g.items.push(m);
+    groups.set(key, g);
+  }
+
+  const blocks = [...groups.values()]
+    .sort((a, b) => {
+      if (a.pr === null) return 1;
+      if (b.pr === null) return -1;
+      return (b.items[0]?.ts ?? '').localeCompare(a.items[0]?.ts ?? '');
+    })
+    .map((g) => {
+      const head =
+        g.pr === null
+          ? '<div class="prhead"><b>No open task</b><span class="meta">sent between tasks</span></div>'
+          : `<div class="prhead"><b>PR #${g.pr}</b><span class="meta">${esc(g.slug ?? '')}</span>
+<span class="meta" style="margin-left:auto">${g.items.length} message${g.items.length === 1 ? '' : 's'}</span></div>`;
+      return `<div class="prgroup">${head}${g.items.map(messageRow).join('')}</div>`;
+    })
+    .join('');
+
+  const more =
+    v.selectedTotal > v.messages.length
+      ? ` &middot; showing the ${v.messages.length} most recent of ${v.selectedTotal}`
+      : '';
+
+  return `<div class="panel"><div class="title">
+<h2>${esc(sel.from)} &rarr; ${esc(sel.target.label)}</h2>
+<span class="meta">${v.selectedTotal} message${v.selectedTotal === 1 ? '' : 's'}${more}</span></div>
+${blocks || '<div class="meta">Nothing on this edge.</div>'}</div>`;
+}
+
+export function messagesPage(v: MessagesView): string {
+  const kpis = `<div class="kpis">
+${kpi('Messages', v.total.toLocaleString(), `${v.peers.toLocaleString()} peer &middot; ${v.dispatches.toLocaleString()} dispatched`)}
+${kpi('Agents talking', String(v.senders.length), `${v.peerTargets.filter((t) => t.kind === 'slot').length} addressed`)}
+${kpi('Recipient compacted', v.compacted.toLocaleString(), 'delivered, but the copy is gone')}
+${kpi('Never delivered', v.failures.toLocaleString(), v.failures > 0 ? 'sender believed it handed off' : 'every send landed')}
+</div>`;
+
+  const body =
+    v.total === 0
+      ? `<div class="body"><div class="panel"><div class="title"><h2>No messages</h2></div>
+<div class="meta">Nothing in this project&rsquo;s transcripts records one agent addressing another. That is
+expected for a project worked by a single session: inter-agent messages only exist where a fleet does.</div></div></div>`
+      : `<div class="body">${kpis}${matrix(v)}${selection(v)}</div>
+<div class="foot"><b>The send is the record, not the delivery.</b> Claude Code compacts long sessions, and an
+inbound peer message is among the first things it drops &mdash; so some of these were confirmed delivered by
+the sender&rsquo;s own transcript while the recipient&rsquo;s copy no longer exists. Those are marked
+<i>attributed</i>: the body and the sender are observed, and the recipient is resolved by a name-to-slot
+dictionary learned only from messages whose delivery was seen on both ends.</div>`;
+
+  return shell(
+    `${v.project.slug} messages — TokenViz`,
+    header(v.project.slug, 'messages', v.project.github_repo ?? v.project.root_path),
+    body,
+  );
 }

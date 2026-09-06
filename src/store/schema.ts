@@ -304,4 +304,84 @@ export const MIGRATIONS: string[] = [
     updated_at      TEXT NOT NULL
   );
   `,
+
+  // 0009 - inter-agent messages: peer sends, peer receives, subagent dispatches.
+  // Both halves of a peer message are recorded, on opposite sides of the fleet,
+  // and joined on the `msg_id` each quotes. Sends are therefore keyed on the
+  // tool-use id rather than that join key: the body and the id arrive on two
+  // lines, and a resume boundary may fall between them, so the id is filled in
+  // by a later UPDATE rather than held in memory across the gap.
+  `
+  -- The outbound half. to_name is the identity the sender addressed, which
+  -- is per-session (agenta-ff) and sometimes a task name -- never a Slot.
+  -- It is stored as written; resolving it is the delivery join's job.
+  CREATE TABLE agent_send (
+    project_id   INTEGER NOT NULL REFERENCES project(id),
+    tool_use_id  TEXT NOT NULL,
+    session      TEXT NOT NULL,
+    slot         TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    to_name      TEXT NOT NULL,
+    summary      TEXT,
+    body         TEXT NOT NULL,
+    skill        TEXT,
+    msg_id       TEXT,
+    delivered    INTEGER,
+    error        TEXT,
+    first_seen_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, tool_use_id)
+  ) WITHOUT ROWID;
+
+  CREATE INDEX ix_send_msg  ON agent_send (project_id, msg_id);
+  CREATE INDEX ix_send_slot ON agent_send (project_id, slot, ts);
+
+  -- The inbound half, keyed on the transcript line's own uuid for the same
+  -- reason events are: re-reading a file must be idempotent.
+  CREATE TABLE agent_receive (
+    project_id   INTEGER NOT NULL REFERENCES project(id),
+    uuid         TEXT NOT NULL,
+    session      TEXT NOT NULL,
+    slot         TEXT NOT NULL,
+    ts           TEXT NOT NULL,
+    msg_id       TEXT NOT NULL,
+    from_name    TEXT,
+    from_mode    TEXT,
+    body         TEXT NOT NULL,
+    git_branch   TEXT,
+    first_seen_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, uuid)
+  ) WITHOUT ROWID;
+
+  CREATE INDEX ix_recv_msg  ON agent_receive (project_id, msg_id);
+  CREATE INDEX ix_recv_slot ON agent_receive (project_id, slot, ts);
+
+  -- A Slot spawning a subagent. agent_id names the nested transcript the
+  -- subagent wrote, which is how a dispatch reaches the work it caused; the
+  -- subagent's own tokens are already in request under origin = 'subagent'.
+  CREATE TABLE agent_dispatch (
+    project_id    INTEGER NOT NULL REFERENCES project(id),
+    tool_use_id   TEXT NOT NULL,
+    session       TEXT NOT NULL,
+    slot          TEXT NOT NULL,
+    ts            TEXT NOT NULL,
+    subagent_type TEXT NOT NULL,
+    description   TEXT,
+    prompt        TEXT NOT NULL,
+    skill         TEXT,
+    agent_id      TEXT,
+    model         TEXT,
+    status        TEXT,
+    first_seen_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, tool_use_id)
+  ) WITHOUT ROWID;
+
+  CREATE INDEX ix_dispatch_slot ON agent_dispatch (project_id, slot, ts);
+  CREATE INDEX ix_dispatch_type ON agent_dispatch (project_id, subagent_type, ts);
+  CREATE INDEX ix_dispatch_agent ON agent_dispatch (project_id, agent_id);
+
+  -- Messages were not extracted before this migration, so every transcript
+  -- must be re-read once. Requests dedup on their own key, so this cannot
+  -- double count; it only costs one full pass.
+  DELETE FROM transcript_file;
+  `,
 ];

@@ -3,6 +3,13 @@ import type { DatabaseSync } from 'node:sqlite';
 import { nowIso } from '../store/db.ts';
 import type { Project } from '../store/projects.ts';
 import {
+  parseDispatches,
+  parseDispatchOutcome,
+  parsePeerReceive,
+  parsePeerSends,
+  parseSendOutcome,
+} from '../sources/messages.ts';
+import {
   discoverTranscripts,
   headHash,
   linesFrom,
@@ -23,6 +30,9 @@ export type TranscriptIngestStats = {
   linesRead: number;
   requestsInserted: number;
   eventsInserted: number;
+  sendsInserted: number;
+  receivesInserted: number;
+  dispatchesInserted: number;
   costStates: number;
 };
 
@@ -64,6 +74,9 @@ export function ingestTranscripts(db: DatabaseSync, project: Project): Transcrip
     linesRead: 0,
     requestsInserted: 0,
     eventsInserted: 0,
+    sendsInserted: 0,
+    receivesInserted: 0,
+    dispatchesInserted: 0,
     costStates: 0,
   };
 
@@ -114,6 +127,30 @@ export function ingestTranscripts(db: DatabaseSync, project: Project): Transcrip
          (project_id, uuid, session, slot, ts, kind, detail, size)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    const insertSend = db.prepare(
+      `INSERT OR IGNORE INTO agent_send
+         (project_id, tool_use_id, session, slot, ts, to_name, summary, body, skill, first_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    // The delivery result arrives on its own line, which a resume boundary may
+    // separate from the send by an arbitrary distance. Reconciling here rather
+    // than in memory is what makes that gap harmless.
+    const settleSend = db.prepare(
+      'UPDATE agent_send SET msg_id = ?, delivered = ?, error = ? WHERE project_id = ? AND tool_use_id = ?',
+    );
+    const insertReceive = db.prepare(
+      `INSERT OR IGNORE INTO agent_receive
+         (project_id, uuid, session, slot, ts, msg_id, from_name, from_mode, body, git_branch, first_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertDispatch = db.prepare(
+      `INSERT OR IGNORE INTO agent_dispatch
+         (project_id, tool_use_id, session, slot, ts, subagent_type, description, prompt, skill, first_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const settleDispatch = db.prepare(
+      'UPDATE agent_dispatch SET agent_id = ?, model = ?, status = ? WHERE project_id = ? AND tool_use_id = ?',
+    );
     const saveState = db.prepare(
       `INSERT INTO transcript_file (
          project_id, path, size, head_hash, head_len, mtime_ms, byte_offset, lines_seen, rescans, last_scanned_at
@@ -136,6 +173,11 @@ export function ingestTranscripts(db: DatabaseSync, project: Project): Transcrip
             readState,
             insertRequest,
             insertEvent,
+            insertSend,
+            settleSend,
+            insertReceive,
+            insertDispatch,
+            settleDispatch,
             upsertSessionCost,
             upsertModelCost,
             saveState,
@@ -168,6 +210,11 @@ type Ctx = {
   readState: ReturnType<DatabaseSync['prepare']>;
   insertRequest: ReturnType<DatabaseSync['prepare']>;
   insertEvent: ReturnType<DatabaseSync['prepare']>;
+  insertSend: ReturnType<DatabaseSync['prepare']>;
+  settleSend: ReturnType<DatabaseSync['prepare']>;
+  insertReceive: ReturnType<DatabaseSync['prepare']>;
+  insertDispatch: ReturnType<DatabaseSync['prepare']>;
+  settleDispatch: ReturnType<DatabaseSync['prepare']>;
   upsertSessionCost: ReturnType<DatabaseSync['prepare']>;
   upsertModelCost: ReturnType<DatabaseSync['prepare']>;
   saveState: ReturnType<DatabaseSync['prepare']>;
@@ -212,6 +259,51 @@ function ingestOne(file: TranscriptFile, ctx: Ctx): number {
   for (const { line, nextOffset } of linesFrom(file.path, startOffset)) {
     offset = nextOffset;
     lines += 1;
+
+    // Messages are read before the usage/event/cost chain rather than inside
+    // it, because an assistant line that sends a message also carries that
+    // request's usage. Falling through the chain's early `continue` would let
+    // every outbound message vanish behind its own token record.
+    for (const send of parsePeerSends(line)) {
+      const res = ctx.insertSend.run(
+        project.id, send.toolUseId, file.session, file.slot, send.ts,
+        send.toName, send.summary, send.body, send.skill, observedAt,
+      );
+      stats.sendsInserted += Number(res.changes);
+    }
+    for (const dispatch of parseDispatches(line)) {
+      const res = ctx.insertDispatch.run(
+        project.id, dispatch.toolUseId, file.session, file.slot, dispatch.ts,
+        dispatch.subagentType, dispatch.description, dispatch.prompt, dispatch.skill, observedAt,
+      );
+      stats.dispatchesInserted += Number(res.changes);
+    }
+
+    const sendOutcome = parseSendOutcome(line);
+    if (sendOutcome) {
+      ctx.settleSend.run(
+        sendOutcome.msgId, sendOutcome.delivered ? 1 : 0, sendOutcome.error,
+        project.id, sendOutcome.toolUseId,
+      );
+    }
+
+    const dispatchOutcome = parseDispatchOutcome(line);
+    if (dispatchOutcome) {
+      ctx.settleDispatch.run(
+        dispatchOutcome.agentId, dispatchOutcome.model, dispatchOutcome.status,
+        project.id, dispatchOutcome.toolUseId,
+      );
+    }
+
+    const receive = parsePeerReceive(line);
+    if (receive) {
+      const res = ctx.insertReceive.run(
+        project.id, receive.uuid, file.session, file.slot, receive.ts,
+        receive.msgId, receive.fromName, receive.fromMode, receive.body,
+        receive.gitBranch, observedAt,
+      );
+      stats.receivesInserted += Number(res.changes);
+    }
 
     const usage = parseUsage(line);
     if (usage) {

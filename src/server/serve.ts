@@ -4,7 +4,8 @@ import { nowIso } from '../store/db.ts';
 import { listProjects, type Project } from '../store/projects.ts';
 import { costSummary } from '../pricing/cost.ts';
 import { buildDashboard, buildSettings } from '../report/dashboard.ts';
-import { dashboardPage, projectsPage, settingsPage } from './views.ts';
+import { buildMessages } from '../report/messages.ts';
+import { dashboardPage, messagesPage, projectsPage, settingsPage } from './views.ts';
 
 /**
  * A local, read-mostly web front end.
@@ -175,6 +176,16 @@ export function serve(db: DatabaseSync, opts: ServeOptions): http.Server {
         if (parts[0] === 'p' && parts[1]) {
           const project = projectBySlug(db, decodeURIComponent(parts[1]));
           if (!project) return send(404, projectsPage([]));
+
+          if (parts[2] === 'messages') {
+            // A cell is selected by the pair naming it, so a view of one edge
+            // is a URL that can be kept and shared rather than a click that
+            // cannot be got back to.
+            const from = url.searchParams.get('from');
+            const to = url.searchParams.get('to');
+            const select = from && to ? { from, to } : null;
+            return send(200, messagesPage(buildMessages(db, project, select)));
+          }
 
           if (parts[2] === 'settings') {
             if (req.method === 'POST') {
