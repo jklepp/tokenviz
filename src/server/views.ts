@@ -192,11 +192,50 @@ function modelPanel(d: Dashboard): string {
 <tbody>${rows}</tbody></table></div></div>`;
 }
 
-function commanderPanels(d: Dashboard): string {
-  const c = d.commander;
-  if (!c) return '';
-  const s = c.summary;
+/**
+ * Where the money went, including the parts no task can claim. Reporting only
+ * the attributable share would make the fleet look cheaper than it is.
+ */
+function spendPanel(d: Dashboard): string {
+  const s = d.commander!.summary;
+  const total = s.totalUSD + s.noTaskSlotUSD + s.betweenTasksUSD;
+  const split = (name: string, v: number, note: string) =>
+    `<div><div class="rowtop"><span>${esc(name)}</span><span>${usd(v)} &middot; ${((v / Math.max(total, 1)) * 100).toFixed(0)}%</span></div>
+<div class="track"><div class="fill" style="width:${((v / Math.max(total, 1)) * 100).toFixed(2)}%"></div></div>
+<div class="note">${esc(note)}</div></div>`;
 
+  return `<div class="panel"><div class="title"><h2>Where spend goes</h2><span class="meta">All of it, not just the attributable part</span></div>
+<div class="rows">
+${split('Attributed to tasks', s.totalUSD, 'Work inside a task window')}
+${split('Orchestration overhead', s.noTaskSlotUSD, 'CEO and owner slots, which open no PRs')}
+${split('Between tasks', s.betweenTasksUSD, 'Coder slots, cut off from any task by the silence timeout')}
+</div></div>`;
+}
+
+/**
+ * Outcomes per pull request. A task is a PR here, so these are the same rows
+ * the north-star KPIs ask for: did it land, did it land unaided, what did that
+ * cost, and how bad is the tail.
+ */
+function prPanel(d: Dashboard): string {
+  const s = d.commander!.summary;
+  const row = (label: string, value: string, note = '') =>
+    `<tr><td class="l">${esc(label)}</td><td>${value}</td><td class="l"><span class="meta">${note}</span></td></tr>`;
+
+  return `<div class="panel"><div class="title"><h2>Pull requests</h2><span class="meta">One task, one PR</span></div>
+<div class="scroll"><table><tbody>
+${row('Pull requests', String(s.tasks), `${s.landed} landed &middot; ${s.abandoned} abandoned &middot; ${s.open} open`)}
+${row('Land rate', pct(s.landRate), 'merged into the integration branch')}
+${row('Autonomous success', pct(s.autonomousSuccessRate), `${s.withTakeover} needed a human`)}
+${row('Cost per landed PR', usd(s.costPerLanded ?? 0), `${usd(s.costPerAutonomousSuccess ?? 0)} per autonomous success`)}
+${row('Cost, p50 / p95', `${usd(s.p50CostUSD ?? 0)} / ${usd(s.p95CostUSD ?? 0)}`, 'the tail is what a mean would hide')}
+${row('Duration, p50 / p95', `${dur(s.p50DurationMs)} / ${dur(s.p95DurationMs)}`, 'first attributed request to merge')}
+</tbody></table></div></div>`;
+}
+
+/** The long tables, which belong below the fold rather than beside the chart. */
+function commanderTables(d: Dashboard): string {
+  const c = d.commander!;
   const roleRows = c.roles
     .map(
       (r) =>
@@ -216,30 +255,10 @@ function commanderPanels(d: Dashboard): string {
     )
     .join('');
 
-  const total = s.totalUSD + s.noTaskSlotUSD + s.betweenTasksUSD;
-  const split = (name: string, v: number, note: string) =>
-    `<div><div class="rowtop"><span>${esc(name)}</span><span>${usd(v)} &middot; ${((v / Math.max(total, 1)) * 100).toFixed(0)}%</span></div>
-<div class="track"><div class="fill" style="width:${((v / Math.max(total, 1)) * 100).toFixed(2)}%"></div></div>
-<div class="note">${esc(note)}</div></div>`;
-
   return `
-<div class="kpis">
-${kpi('Land rate', pct(s.landRate), `${s.landed} of ${s.tasks} tasks`)}
-${kpi('Autonomous success', pct(s.autonomousSuccessRate), `${s.withTakeover} tasks needed a human`)}
-${kpi('Cost per landed task', usd(s.costPerLanded ?? 0), `${usd(s.costPerAutonomousSuccess ?? 0)} per autonomous success`)}
-${kpi('p95 cost / duration', `${usd(s.p95CostUSD ?? 0)}`, `p50 ${usd(s.p50CostUSD ?? 0)} &middot; p95 duration ${dur(s.p95DurationMs)}`)}
-</div>
-<div class="grid">
-  <div class="panel"><div class="title"><h2>Most expensive tasks</h2><span class="meta">Priority targets for context reduction</span></div>
-  <div class="scroll"><table><thead><tr><th class="l">PR</th><th class="l">Slot</th><th class="l">Task</th><th>Requests</th><th>Duration</th><th></th><th>Cost</th></tr></thead>
-  <tbody>${taskRows}</tbody></table></div></div>
-  <div class="panel"><div class="title"><h2>Where spend goes</h2><span class="meta">All of it, not just the attributable part</span></div>
-  <div class="rows">
-  ${split('Attributed to tasks', s.totalUSD, 'Work inside a task window')}
-  ${split('Orchestration overhead', s.noTaskSlotUSD, 'CEO and owner slots, which open no PRs')}
-  ${split('Between tasks', s.betweenTasksUSD, 'Coder slots, cut off from any task by the silence timeout')}
-  </div></div>
-</div>
+<div class="panel"><div class="title"><h2>Most expensive pull requests</h2><span class="meta">Priority targets for context reduction</span></div>
+<div class="scroll"><table><thead><tr><th class="l">PR</th><th class="l">Slot</th><th class="l">Task</th><th>Requests</th><th>Duration</th><th></th><th>Cost</th></tr></thead>
+<tbody>${taskRows}</tbody></table></div></div>
 <div class="panel"><div class="title"><h2>By role</h2><span class="meta">Usage-based chargeback</span></div>
 <div class="scroll"><table><thead><tr><th class="l">Role</th><th>Tasks</th><th>Landed</th><th>Takeovers</th><th>Cost</th><th>Per landed</th></tr></thead>
 <tbody>${roleRows}</tbody></table></div></div>`;
@@ -258,9 +277,10 @@ ${kpi('Mean context', human(t.meanContext), `peak ${human(t.peakContext)}`)}
   const body = `${basisBar(d)}<div class="body">
 ${kpis}
 ${chart(d)}
+${d.commander ? `<div class="equal">${spendPanel(d)}${prPanel(d)}</div>` : ''}
 <div class="grid">${slotPanel(d)}${cachePanel(d)}</div>
 ${modelPanel(d)}
-${d.commander ? commanderPanels(d) : `<div class="panel"><div class="title"><h2>Tasks</h2></div><div class="meta">
+${d.commander ? commanderTables(d) : `<div class="panel"><div class="title"><h2>Tasks</h2></div><div class="meta">
 This project has no workflow adapter, so there are no tasks, roles or outcomes to show. Everything above is
 true of any project regardless of how it is worked.</div></div>`}
 </div>
