@@ -69,7 +69,7 @@ h2{font-size:17px;margin:0}
 .grid{display:grid;grid-template-columns:1.6fr .9fr;gap:20px;align-items:start}
 .equal{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
 .title{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:12px}
-.chart{height:360px;display:flex;align-items:end;gap:7px;border-bottom:1px solid var(--l)}
+.chart{height:520px;display:flex;align-items:end;gap:7px;border-bottom:1px solid var(--l)}
 .day{height:100%;flex:1;display:flex;flex-direction:column;justify-content:end;min-width:0}
 .value{font-size:11px;color:var(--m);text-align:center;margin-bottom:4px;white-space:nowrap;font-variant-numeric:tabular-nums}
 .bar{background:var(--b);border-radius:5px 5px 0 0;border-top:3px solid var(--o);min-height:3px}
@@ -97,7 +97,7 @@ button.ghost{background:transparent;color:var(--i);border:1px solid var(--l)}
 .flash{padding:12px 16px;border-radius:10px;border:1px solid var(--g);color:var(--g);background:var(--p);font-size:15px}
 .flash.warn{border-color:var(--o);color:var(--o)}
 .hint{font-size:13px;color:var(--m);margin-top:6px}
-@media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.grid,.equal{grid-template-columns:1fr}}
+@media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.grid,.equal{grid-template-columns:1fr}.chart{height:300px}}
 `;
 
 function shell(title: string, nav: string, body: string): string {
