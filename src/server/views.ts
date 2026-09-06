@@ -162,15 +162,16 @@ function cachePanel(d: Dashboard): string {
 }
 
 function slotPanel(d: Dashboard): string {
+  const roles = d.slots.some((s) => s.role !== null);
   const rows = d.slots
     .map(
       (s) =>
-        `<tr><td class="l">${esc(s.slot)}</td><td class="l"><span class="tag">${esc(s.role)}</span></td>
+        `<tr><td class="l">${esc(s.slot)}</td>${roles ? `<td class="l"><span class="tag">${esc(s.role)}</span></td>` : ''}
 <td>${s.requests.toLocaleString()}</td><td>${human(s.processed)}</td><td>${d.cardsPresent ? usd(s.usd) : '&mdash;'}</td></tr>`,
     )
     .join('');
-  return `<div class="panel"><div class="title"><h2>Attribution</h2><span class="meta">By slot and role</span></div>
-<div class="scroll"><table><thead><tr><th class="l">Slot</th><th class="l">Role</th><th>Requests</th><th>Processed</th><th>Cost</th></tr></thead>
+  return `<div class="panel"><div class="title"><h2>Attribution</h2><span class="meta">By ${roles ? 'slot and role' : 'worktree'}</span></div>
+<div class="scroll"><table><thead><tr><th class="l">${roles ? 'Slot' : 'Worktree'}</th>${roles ? '<th class="l">Role</th>' : ''}<th>Requests</th><th>Processed</th><th>Cost</th></tr></thead>
 <tbody>${rows}</tbody></table></div></div>`;
 }
 

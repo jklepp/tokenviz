@@ -13,6 +13,7 @@ import { annotatePulls, reconstructTasks, summariseTasks, taskMetrics } from './
 import { captureLedger, ledgerPath, ledgerStats } from './adapters/commander/ledger.ts';
 import { serve } from './server/serve.ts';
 import { byModel, byOrigin, bySlot, cacheHitRate, human, totals } from './report/usage.ts';
+import { checkAlerts, formatAlerts } from './report/alerts.ts';
 import { solveRates } from './pricing/solve.ts';
 import { costSummary, listCards, reconcile, seedAliases, writeCards } from './pricing/cost.ts';
 import {
@@ -101,6 +102,7 @@ function main(argv: string[]): number {
           `${t.requestsInserted.toLocaleString()} new requests, ` +
           `${t.eventsInserted.toLocaleString()} events, ${t.costStates} cost-state records`,
       );
+      for (const line of formatAlerts(checkAlerts(db, project))) out(line);
       return 0;
     }
 
@@ -193,16 +195,22 @@ function main(argv: string[]): number {
           for (const u of cost.uncostedModels) out(`    ${u.model ?? '(none)'}  ${u.requests}`);
         }
         out('');
-        out(
-          `Reconciliation        computed $${rec.computedUSD.toFixed(2)} vs billed $${rec.billedUSD.toFixed(2)} ` +
-            `over ${rec.sessions} sessions`,
-        );
-        out(
-          `                      median session error ${(rec.medianRelError * 100).toFixed(1)}%, ` +
-            `total ${((rec.computedUSD - rec.billedUSD) / rec.billedUSD * 100).toFixed(1)}%`,
-        );
-        out('Billing counts usage the transcripts never recorded, so these cannot match');
-        out('exactly. The shape of the difference is the signal, not its absence.');
+        if (rec.sessions === 0) {
+          out('Reconciliation        not possible: these transcripts carry no cost-state records,');
+          out('                      so there is no billing to check the rates against. Cost above');
+          out('                      is computed from cards solved on another project.');
+        } else {
+          out(
+            `Reconciliation        computed $${rec.computedUSD.toFixed(2)} vs billed $${rec.billedUSD.toFixed(2)} ` +
+              `over ${rec.sessions} sessions`,
+          );
+          out(
+            `                      median session error ${(rec.medianRelError * 100).toFixed(1)}%, ` +
+              `total ${((rec.computedUSD - rec.billedUSD) / rec.billedUSD * 100).toFixed(1)}%`,
+          );
+          out('Billing counts usage the transcripts never recorded, so these cannot match');
+          out('exactly. The shape of the difference is the signal, not its absence.');
+        }
       } else {
         out('');
         out('No rate cards stored. Re-run with --write to persist the rows above.');
@@ -307,6 +315,7 @@ function main(argv: string[]): number {
             `${new Date().toISOString().slice(11, 19)}  rev ${res.rev}  ` +
               `batch ${res.batchId ?? '-'}  ${res.tasks} task(s)`,
           );
+          for (const a of checkAlerts(db, project)) out(`  ! ${a.message}`);
         }
       };
 

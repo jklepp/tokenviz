@@ -32,7 +32,14 @@ export type ModelRow = {
   peakContext: number;
 };
 
-export type SlotRow = { slot: string; role: string; requests: number; processed: number; usd: number };
+export type SlotRow = {
+  slot: string;
+  /** Null unless the project has an adapter that gives slots a meaning. */
+  role: string | null;
+  requests: number;
+  processed: number;
+  usd: number;
+};
 
 export type Dashboard = {
   project: Project;
@@ -134,9 +141,13 @@ export function buildDashboard(db: DatabaseSync, project: Project): Dashboard {
       slotUsd.set(r.slot, r.usd);
     }
   }
+  // Role is a Commander concept. A project without that adapter has worktrees
+  // named whatever its author called them, and labelling them all "Owner"
+  // would be inventing structure that is not there.
+  const hasRoles = project.adapter === 'commander';
   const slots: SlotRow[] = bySlot(db, project).map((s) => ({
     slot: s.slot,
-    role: roleOf(s.slot),
+    role: hasRoles ? roleOf(s.slot) : null,
     requests: s.requests,
     processed: s.processed,
     usd: slotUsd.get(s.slot) ?? 0,
@@ -177,9 +188,12 @@ export function buildDashboard(db: DatabaseSync, project: Project): Dashboard {
     days,
     models,
     slots,
-    reconciliation: rec
-      ? { computed: rec.computedUSD, billed: rec.billedUSD, medianRelError: rec.medianRelError }
-      : null,
+    // A project whose transcripts carry no cost-state has nothing to reconcile
+    // against; reporting NaN would read as a broken number rather than a gap.
+    reconciliation:
+      rec && rec.sessions > 0
+        ? { computed: rec.computedUSD, billed: rec.billedUSD, medianRelError: rec.medianRelError }
+        : null,
     commander,
   };
 }
