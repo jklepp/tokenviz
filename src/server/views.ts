@@ -121,20 +121,40 @@ button.ghost{background:transparent;color:var(--i);border:1px solid var(--l)}
 .mixbar .seg:nth-child(3){background:var(--g)}
 .mixbar .seg:nth-child(4){background:var(--m)}
 @media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.grid,.equal{grid-template-columns:1fr}.chart{height:300px}}
-.mx{border-collapse:separate;border-spacing:4px;font-size:13px;width:auto;min-width:100%}
-.mx th{padding:0 4px 8px;font-size:12px;color:var(--m);font-weight:500;text-align:center;white-space:nowrap}
-.mx th.l{text-align:left;padding-left:2px}
-.mx td{padding:0;border-top:0}
-.mx td.rl{padding:0 14px 0 2px;white-space:nowrap;text-align:left;border-top:0}
-.mx .cell{display:block;padding:10px 8px;border-radius:7px;text-decoration:none;text-align:center;
-  font-variant-numeric:tabular-nums;border:1px solid transparent;min-width:48px}
+/* Fits the panel at a full-width window, so no scrollbar appears there. The
+   floor is the width at which every column header is still readable; below it
+   the wrapper scrolls rather than truncating the labels. */
+.mx{border-collapse:separate;border-spacing:0;font-size:13px;width:100%;
+  table-layout:fixed;min-width:1080px}
+.mx th{padding:2px;font-size:11.5px;color:var(--m);font-weight:500;text-align:center;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Fixed layout takes its columns from the first row, which is the group
+   header -- so the label column's width has to be declared there too. */
+.mx .lw{width:174px}
+.mx th.l{text-align:left;padding-left:2px;font-size:12px}
+.mx td.rl .meta{font-size:12px}
+.mx td{padding:2px;border-top:0}
+.mx td.rl{padding:2px 10px 2px 2px;white-space:nowrap;text-align:left;border-top:0;overflow:hidden}
+.mx .cell{display:block;padding:9px 4px;border-radius:7px;text-decoration:none;text-align:center;
+  font-variant-numeric:tabular-nums;border:1px solid transparent}
 .mx .cell:hover{border-color:var(--m)}
 .mx .cell.on{border-color:var(--o);box-shadow:0 0 0 1px var(--o)}
-.mx .none,.mx .self{display:block;padding:10px 8px;text-align:center;color:var(--m)}
+.mx .none,.mx .self{display:block;padding:9px 4px;text-align:center;color:var(--m)}
 .mx .none{opacity:.3}
 .mx .self{opacity:.22}
-.mx .gap{width:16px;padding:0}
-.mx .ghead{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--m);padding-bottom:7px;text-align:left}
+.mx .gap{width:14px;padding:0}
+.mx .ghead{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--m);
+  padding:5px 8px 6px;text-align:left}
+/* The two channels outlined, so the grouping reads without tinting the cells
+   underneath it: which agents the fleet talks to, and which kinds of subagent
+   it spawns. A table cannot draw one border around a block of cells, so the
+   outline is assembled from the group's own edges. */
+.mx .gl{border-left:1px solid var(--l)}
+.mx .gr{border-right:1px solid var(--l)}
+.mx .gb{border-bottom:1px solid var(--l)}
+.mx .rt{border:1px solid var(--l);border-bottom:0;border-radius:11px 11px 0 0}
+.mx .bl{border-bottom-left-radius:11px}
+.mx .br{border-bottom-right-radius:11px}
 .rowname{font-weight:600}
 .msg{border-top:1px solid var(--l);padding:12px 0}
 .msg summary{cursor:pointer;list-style:none}
@@ -509,12 +529,12 @@ function matrix(v: MessagesView): string {
   const slug = encodeURIComponent(v.project.slug);
   const max = Math.max(1, ...[...v.cells.values()].map((c) => c.count));
 
-  const cell = (from: string, t: Target): string => {
+  const cell = (from: string, t: Target, cls = ''): string => {
     const c = v.cells.get(cellKey(from, t.key));
     if (!c) {
       return t.key === from
-        ? '<td><span class="self" title="an agent does not message itself">&mdash;</span></td>'
-        : '<td><span class="none">&middot;</span></td>';
+        ? `<td class="${cls}"><span class="self" title="an agent does not message itself">&mdash;</span></td>`
+        : `<td class="${cls}"><span class="none">&middot;</span></td>`;
     }
     // Capped well below full strength so the number stays legible against the
     // fill in both themes; a heat grid nobody can read is just decoration.
@@ -524,33 +544,61 @@ function matrix(v: MessagesView): string {
       .filter(([, n]) => n > 0)
       .map(([r, n]) => `${n} ${r}`)
       .join(', ');
-    return `<td><a class="cell${on}" href="/p/${slug}/messages?from=${encodeURIComponent(from)}&amp;to=${encodeURIComponent(t.key)}"
+    return `<td class="${cls}"><a class="cell${on}" href="/p/${slug}/messages?from=${encodeURIComponent(from)}&amp;to=${encodeURIComponent(t.key)}"
  style="background:color-mix(in srgb, var(--b) ${wash.toFixed(0)}%, var(--p))"
  title="${esc(from)} to ${esc(t.label)}: ${c.count} (${esc(breakdown)})">${c.count}</a></td>`;
   };
 
-  const head = (targets: Target[]) => targets.map((t) => `<th>${esc(t.label)}</th>`).join('');
+  // Column headings are trimmed to what the heading above them does not
+  // already say: a subagent column sits under "to subagents", so the suffix
+  // every one of them shares is redundant. The last peer column is a
+  // destination nothing was seen arriving at, which is shorter said as the
+  // recipient being unknown. Both keep their full name in the tooltip, and
+  // this is what lets the grid fit without a scrollbar.
+  const short = (label: string) =>
+    label === 'unresolved' ? 'unknown' : label.replace(/-(reviewer|purpose)$/, '');
+
+  const edge = (i: number, n: number) => `${i === 0 ? ' gl' : ''}${i === n - 1 ? ' gr' : ''}`;
+
+  const head = (targets: Target[]) =>
+    targets
+      .map(
+        (t, i) =>
+          `<th class="g${edge(i, targets.length)}" title="${esc(t.label)}">${esc(short(t.label))}</th>`,
+      )
+      .join('');
   const gapHead = v.agentTargets.length > 0 ? '<th class="gap"></th>' : '';
   const gapCell = v.agentTargets.length > 0 ? '<td class="gap"></td>' : '';
 
+  // The band's rounded lower corners belong to the last row, so it is the row
+  // index rather than a CSS selector that decides which cells carry them.
   const rows = v.senders
-    .map(
-      (s) => `<tr><td class="rl"><span class="rowname">${esc(s.slot)}</span>
+    .map((s, i) => {
+      const last = i === v.senders.length - 1;
+      const run = (targets: Target[]) =>
+        targets
+          .map((t, j) => {
+            const bottom = !last ? '' : ` gb${j === 0 ? ' bl' : ''}${j === targets.length - 1 ? ' br' : ''}`;
+            return cell(s.slot, t, `g${edge(j, targets.length)}${bottom}`);
+          })
+          .join('');
+      return `<tr><td class="rl"><span class="rowname">${esc(s.slot)}</span>
 <span class="meta"> ${esc(s.role)} &middot; ${s.sent}</span></td>
-${v.peerTargets.map((t) => cell(s.slot, t)).join('')}${gapCell}${v.agentTargets.map((t) => cell(s.slot, t)).join('')}</tr>`,
-    )
+${run(v.peerTargets)}${gapCell}${run(v.agentTargets)}</tr>`;
+    })
     .join('');
 
   const groupRow =
-    v.agentTargets.length > 0
-      ? `<tr><td></td><td class="ghead" colspan="${v.peerTargets.length}">to agents</td><td></td>
-<td class="ghead" colspan="${v.agentTargets.length}">to subagents</td></tr>`
-      : '';
+    `<tr><td class="lw"></td><td class="ghead rt" colspan="${v.peerTargets.length}">to agents</td>` +
+    (v.agentTargets.length > 0
+      ? `<td class="gap"></td><td class="ghead rt" colspan="${v.agentTargets.length}">to subagents</td>`
+      : '') +
+    '</tr>';
 
   return `<div class="panel"><div class="title"><h2>Who talks to whom</h2>
 <span class="meta">Rows send, columns receive &middot; click a cell to read it</span></div>
 <div class="scroll"><table class="mx">
-<thead>${groupRow}<tr><th class="l">from</th>${head(v.peerTargets)}${gapHead}${head(v.agentTargets)}</tr></thead>
+<thead>${groupRow}<tr><th class="l lw">from</th>${head(v.peerTargets)}${gapHead}${head(v.agentTargets)}</tr></thead>
 <tbody>${rows}</tbody></table></div>
 <div class="legend">
 <span><span class="tag">confirmed</span> both halves observed</span>
