@@ -11,6 +11,7 @@ import { ingestTranscripts } from './ingest/transcripts.ts';
 import { ingestPulls } from './ingest/pulls.ts';
 import { annotatePulls, reconstructTasks, summariseTasks, taskMetrics } from './adapters/commander/tasks.ts';
 import { captureLedger, ledgerPath, ledgerStats } from './adapters/commander/ledger.ts';
+import { serve } from './server/serve.ts';
 import { byModel, byOrigin, bySlot, cacheHitRate, human, totals } from './report/usage.ts';
 import { solveRates } from './pricing/solve.ts';
 import { costSummary, listCards, reconcile, seedAliases, writeCards } from './pricing/cost.ts';
@@ -28,6 +29,7 @@ const USAGE = `tokenviz — FinOps metrics for agentic development
   tokenviz rates       [--project <path>] [--write] [--from <ISO date>]
   tokenviz tasks       [--project <path>] [--worst <n>]
   tokenviz watch       [--project <path>] [--interval <seconds>]
+  tokenviz serve       [--port <n>]
   tokenviz promotions  [--project <path>] [--steps]
   tokenviz projects
 
@@ -46,6 +48,7 @@ function main(argv: string[]): number {
       steps: { type: 'boolean', default: false },
       worst: { type: 'string' },
       interval: { type: 'string' },
+      port: { type: 'string' },
       write: { type: 'boolean', default: false },
       from: { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
@@ -322,6 +325,19 @@ function main(argv: string[]): number {
       };
       process.on('SIGINT', stop);
       process.on('SIGTERM', stop);
+      return 0;
+    }
+
+    case 'serve': {
+      const port = Number(values.port ?? 7333);
+      serve(db, { port });
+      out('');
+      out(`  TokenViz  http://127.0.0.1:${port}`);
+      out('');
+      out('  Loopback only. The store spans every project on this machine,');
+      out('  including private ones, so it is never exposed by default.');
+      out('');
+      out('  Ctrl-C to stop.');
       return 0;
     }
 

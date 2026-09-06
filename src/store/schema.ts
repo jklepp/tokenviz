@@ -293,4 +293,15 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (project_id, batch_id, task_id)
   );
   `,
+
+  // 0008 - per-model settings that are not prices.
+  // The context window is a property of the model, not of what it costs, so it
+  // does not belong on an effective-dated rate card.
+  `
+  CREATE TABLE model_setting (
+    model           TEXT PRIMARY KEY,
+    context_window  INTEGER,
+    updated_at      TEXT NOT NULL
+  );
+  `,
 ];

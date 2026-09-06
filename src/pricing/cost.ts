@@ -11,6 +11,13 @@ import type { SolvedRate } from './solve.ts';
  * what last month cost. See docs/adr/0002.
  */
 
+/**
+ * Decimal places a rate is stored and displayed at. Cache read is the reason
+ * this is not 2: it is a small number multiplied by billions of tokens, so a
+ * hundredth of a cent per million moves the total by dollars.
+ */
+export const RATE_DECIMALS = 4;
+
 export type Card = {
   id: number;
   model: string;
@@ -56,6 +63,11 @@ export function writeCards(
        source = excluded.source, note = excluded.note`,
   );
 
+  // Round to the precision the settings page shows. If storage carried more
+  // precision than the form, opening settings and saving an unchanged page
+  // would move the total -- a no-op that is not a no-op.
+  const r4 = (n: number) => Number(n.toFixed(RATE_DECIMALS));
+
   let written = 0;
   const skipped: string[] = [];
   for (const s of solved) {
@@ -64,8 +76,8 @@ export function writeCards(
       continue;
     }
     insert.run(
-      s.model, validFrom, s.rates.inputPerMTok, s.rates.outputPerMTok,
-      s.rates.cacheWrite5mPerMTok, s.rates.cacheWrite1hPerMTok, s.rates.cacheReadPerMTok,
+      s.model, validFrom, r4(s.rates.inputPerMTok), r4(s.rates.outputPerMTok),
+      r4(s.rates.cacheWrite5mPerMTok), r4(s.rates.cacheWrite1hPerMTok), r4(s.rates.cacheReadPerMTok),
       source, `fit over ${s.sessions} billed sessions, median error ${(s.medianRelError * 100).toFixed(1)}%`,
       nowIso(),
     );
