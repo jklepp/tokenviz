@@ -170,9 +170,10 @@ function main(argv: string[]): number {
         );
       }
       out('');
-      out('The input rate is derived as 10x the fitted cache-read rate, not fitted:');
-      out('input tokens are too few to carry signal. A row is only written when the');
-      out('fitted cache-write rate independently agrees with the observed tier mix.');
+      out('Output, cache write and cache read are fitted. Input is derived, because');
+      out('input tokens are too few to carry signal: normally as 10x the cache-read');
+      out('rate, but from the cache-write rate for a model marked !, whose cache reads');
+      out('are not priced at the usual tenth of input. Cost is reproduced either way.');
 
       if (values.write) {
         const validFrom = values.from ?? '2026-08-01T00:00:00Z';

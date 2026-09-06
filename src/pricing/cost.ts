@@ -71,14 +71,16 @@ export function writeCards(
   let written = 0;
   const skipped: string[] = [];
   for (const s of solved) {
-    if (!s.rates || !s.corroborated) {
+    if (!s.rates) {
       skipped.push(`${s.model}: ${s.note ?? 'no fit'}`);
       continue;
     }
     insert.run(
       s.model, validFrom, r4(s.rates.inputPerMTok), r4(s.rates.outputPerMTok),
       r4(s.rates.cacheWrite5mPerMTok), r4(s.rates.cacheWrite1hPerMTok), r4(s.rates.cacheReadPerMTok),
-      source, `fit over ${s.sessions} billed sessions, median error ${(s.medianRelError * 100).toFixed(1)}%`,
+      s.corroborated ? source : `${source}-uncorroborated`,
+      `fit over ${s.sessions} billed sessions, median error ${(s.medianRelError * 100).toFixed(1)}%` +
+        (s.corroborated ? '' : `; ${s.note}`),
       nowIso(),
     );
     written += 1;

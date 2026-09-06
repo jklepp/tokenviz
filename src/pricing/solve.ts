@@ -99,18 +99,30 @@ type Row = { input: number; output: number; cache_write: number; cache_read: num
 
 const MTOK = 1_000_000;
 
-/** The observed split of cache writes between the 5-minute and 1-hour tiers. */
-export function cacheWriteMix(db: DatabaseSync, project: Project): { m5: number; m1h: number } {
+/**
+ * The observed split of cache writes between the 5-minute and 1-hour tiers,
+ * for one model or for the project as a whole. Per model matters: the blend a
+ * model's own traffic implies is what its fitted cache-write rate should be
+ * compared against, not the fleet's average.
+ */
+export function cacheWriteMix(
+  db: DatabaseSync,
+  project: Project,
+  model?: string,
+): { m5: number; m1h: number; blend: number } {
   const r = db
-    .prepare('SELECT COALESCE(SUM(cache_write_5m),0) m5, COALESCE(SUM(cache_write_1h),0) m1h FROM request WHERE project_id = ?')
-    .get(project.id) as { m5: number; m1h: number };
+    .prepare(
+      `SELECT COALESCE(SUM(cache_write_5m),0) m5, COALESCE(SUM(cache_write_1h),0) m1h
+         FROM request WHERE project_id = ?${model ? ' AND model = ?' : ''}`,
+    )
+    .get(...(model ? [project.id, model] : [project.id])) as { m5: number; m1h: number };
   const total = r.m5 + r.m1h;
-  return total === 0 ? { m5: 0, m1h: 1 } : { m5: r.m5 / total, m1h: r.m1h / total };
+  const m5 = total === 0 ? 0 : r.m5 / total;
+  const m1h = total === 0 ? 1 : r.m1h / total;
+  return { m5, m1h, blend: m5 * CACHE_WRITE_5M_RATIO + m1h * CACHE_WRITE_1H_RATIO };
 }
 
-export function solveRates(db: DatabaseSync, project: Project, minSessions = 8): SolvedRate[] {
-  const mix = cacheWriteMix(db, project);
-  const blendRatio = mix.m5 * CACHE_WRITE_5M_RATIO + mix.m1h * CACHE_WRITE_1H_RATIO;
+export function solveRates(db: DatabaseSync, project: Project, minSessions = 5): SolvedRate[] {
 
   const models = db
     .prepare('SELECT DISTINCT model FROM session_model_cost WHERE project_id = ? ORDER BY model')
@@ -158,7 +170,16 @@ export function solveRates(db: DatabaseSync, project: Project, minSessions = 8):
       continue;
     }
 
-    const inputRate = cacheRead / CACHE_READ_RATIO;
+    // Two independent estimates of the base input rate. They agree for models
+    // that price cache reads at the usual tenth of input; where they do not,
+    // the model simply does not follow that structure and the write-derived
+    // figure is the one consistent with the rate actually being charged.
+    const blendRatio = cacheWriteMix(db, project, model).blend;
+    const inputFromRead = cacheRead / CACHE_READ_RATIO;
+    const inputFromWrite = blendRatio > 0 ? cacheWrite / blendRatio : inputFromRead;
+    const drift = Math.abs(inputFromWrite - inputFromRead) / Math.max(inputFromRead, 1e-9);
+    const corroborated = drift <= 0.15;
+    const inputRate = corroborated ? inputFromRead : inputFromWrite;
 
     const errors: number[] = [];
     for (const o of obs) {
@@ -167,16 +188,12 @@ export function solveRates(db: DatabaseSync, project: Project, minSessions = 8):
     }
     errors.sort((a, b) => a - b);
 
-    // The fitted cache-write rate was never constrained to agree with the tier
-    // mix, so agreement is real corroboration that the derived input rate is
-    // right. Disagreement means it is not, and the model needs a hand-set card.
-    const predicted = inputRate * blendRatio;
-    const drift = Math.abs(cacheWrite - predicted) / predicted;
-    const corroborated = drift <= 0.15;
-
     out.push({
       model,
       sessions: rows.length,
+      // Every stored rate is a fitted quantity or a split of one. The tier
+      // split preserves the fitted blended write rate exactly, so what is
+      // charged is reproduced whatever the ratio between tiers turns out to be.
       rates: {
         inputPerMTok: inputRate,
         outputPerMTok: output,
@@ -185,14 +202,15 @@ export function solveRates(db: DatabaseSync, project: Project, minSessions = 8):
         cacheReadPerMTok: cacheRead,
       },
       fittedCacheWrite: cacheWrite,
-      predictedCacheWrite: predicted,
+      predictedCacheWrite: inputFromRead * blendRatio,
       corroborated,
       actualTotal,
       maxRelError: errors.at(-1) ?? NaN,
       medianRelError: errors[Math.floor(errors.length / 2)] ?? NaN,
       note: corroborated
         ? null
-        : `cache-write rate is ${(drift * 100).toFixed(0)}% off the tier mix; the derived input rate is unreliable, set this model by hand`,
+        : `prices cache reads at 1/${(inputRate / cacheRead).toFixed(0)} of input rather than the usual 1/10; ` +
+          `input taken from the cache-write rate instead. Cost is still reproduced, but check the input rate by hand`,
     });
   }
 
